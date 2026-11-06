@@ -2,14 +2,20 @@
 
 Selecciona un texto en cualquier app de Windows, pulsa **Win+Alt+E** y aparece un recuadro con una explicación breve y didáctica del término. Puedes repreguntar escribiendo o pulsando una de las preguntas sugeridas.
 
-Hecho con Tauri v2 (Rust) + Vue 3 + TypeScript y la API de Claude (modelo `claude-haiku-5-5`).
+Hecho con Tauri v2 (Rust) + Vue 3 + TypeScript y Claude (modelo `claude-haiku-5-5`).
+
+## Dos modos
+
+La cabecera del recuadro indica cuál está activo.
+
+- **Suscripción** (por defecto): usa tu plan de Claude a través de Claude Code (`claude -p`). No pagas API, pero gasta de tus límites de uso y tarda unos segundos más en responder. Necesita Claude Code instalado con el instalador nativo (`claude.exe` en el PATH; la instalación por npm no sirve) y con la sesión iniciada.
+- **API**: si existe la variable de entorno de usuario `ANTHROPIC_API_KEY`, la app llama directamente a la API. Es más rápida y se paga por uso.
+  La forma más segura de crear la variable es la ventana de Windows "Editar las variables de entorno de esta cuenta" (así la clave no queda en el historial de la terminal). Después, abre una terminal nueva.
 
 ## Requisitos
 
 - Node.js y Rust (`rustup`, toolchain `stable-msvc`).
 - Build Tools de Visual Studio con C++ y el SDK de Windows.
-- Una API key de Anthropic en la variable de entorno de usuario `ANTHROPIC_API_KEY`.
-  La forma más segura de crearla es la ventana de Windows "Editar las variables de entorno de esta cuenta" (así la clave no queda en el historial de la terminal). Después, abre una terminal nueva.
 
 ## Arrancar
 
@@ -26,7 +32,7 @@ En el recuadro: **Esc** lo oculta y la cabecera sirve para arrastrarlo.
 
 1. `src-tauri/src/lib.rs` registra el atajo global. Al pulsarlo, espera a que sueltes las teclas, simula Ctrl+C, lee el portapapeles y deja tu texto anterior como estaba.
 2. Envía al recuadro el texto y el título de la ventana de origen (pista para elegir el significado correcto).
-3. `src/App.vue` llama a Claude en streaming con el prompt pedagógico y guarda el historial para las repreguntas.
+3. `src/App.vue` llama a Claude en streaming con el prompt pedagógico y guarda el historial para las repreguntas. En modo suscripción, Rust lanza `claude -p` sin herramientas, sin servidores MCP, sin tu configuración ni tu `CLAUDE.md` y sin guardar la sesión, y le reenvía la conversación entera en cada repregunta.
 
 ## Límites conocidos
 

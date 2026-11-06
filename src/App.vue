@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import Anthropic from "@anthropic-ai/sdk";
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 
 // Fast model on purpose: you are waiting with the popup open, so latency matters most.
 const MODEL = "claude-haiku-5-5";
+const EFFORT = "low";
+const REFUSAL = "El modelo ha preferido no responder a esto. Prueba a reformularlo.";
 
 const SYSTEM_PROMPT = `Eres un profesor paciente que explica cualquier término, frase o concepto que le llegue a una persona curiosa que no es experta en ese tema.
 
@@ -42,14 +44,24 @@ const chat = ref<ChatEntry[]>([]);
 const input = ref("");
 const error = ref("");
 const streaming = ref(false);
-const missingKey = ref(false);
+// With ANTHROPIC_API_KEY we pay per use through the API; without it, `claude -p` uses the subscription.
+const backend = ref<"api" | "subscription">("subscription");
 const body = ref<HTMLElement>();
 const inputEl = ref<HTMLInputElement>();
 
+/** One answer in flight; `cancel` aborts the API stream or kills the `claude -p` process. */
+interface Request {
+  id: number;
+  aborted: boolean;
+  cancel: () => void;
+}
+
 let client: Anthropic | null = null;
-// Full API history (including thinking blocks), sent back unchanged on every follow-up.
+// Full conversation, sent on every follow-up. In API mode it keeps the thinking blocks unchanged.
 let history: Anthropic.MessageParam[] = [];
-let current: ReturnType<Anthropic["messages"]["stream"]> | null = null;
+let current: Request | null = null;
+// Ids must only grow, even across hot reloads: Rust treats cancelling an id as cancelling every older one.
+let nextRequestId = Date.now();
 
 const suggestions = computed(() => {
   const last = chat.value[chat.value.length - 1];
@@ -86,40 +98,95 @@ function describe(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+async function viaApi(
+  api: Anthropic,
+  messages: Anthropic.MessageParam[],
+  onText: (delta: string) => void,
+  request: Request,
+): Promise<Anthropic.MessageParam["content"]> {
+  const stream = api.messages.stream({
+    model: MODEL,
+    max_tokens: 8000,
+    system: SYSTEM_PROMPT,
+    output_config: { effort: EFFORT },
+    messages,
+  });
+  request.cancel = () => stream.abort();
+  stream.on("text", onText);
+  const message = await stream.finalMessage();
+  if (message.stop_reason === "refusal") throw new Error(REFUSAL);
+  return message.content;
+}
+
+/** `claude -p` keeps no session here, so each call carries the conversation so far as text. */
+function transcript(messages: Anthropic.MessageParam[]): string {
+  // In subscription mode every message content is a plain string.
+  if (messages.length === 1) return messages[0].content as string;
+  const turns = messages.map((message) => {
+    const tag = message.role === "user" ? "usuario" : "profesor";
+    return `<${tag}>\n${message.content as string}\n</${tag}>`;
+  });
+  return `Conversación hasta ahora:\n\n${turns.join("\n\n")}\n\nResponde al último mensaje del usuario.`;
+}
+
+async function viaSubscription(
+  messages: Anthropic.MessageParam[],
+  onText: (delta: string) => void,
+  request: Request,
+): Promise<string> {
+  let done = false;
+  const onTextChannel = new Channel<string>();
+  onTextChannel.onmessage = (delta) => {
+    if (!done) onText(delta);
+  };
+  request.cancel = () => void invoke("cancel_claude_code", { requestId: request.id });
+  const reply = await invoke<string>("ask_claude_code", {
+    requestId: request.id,
+    model: MODEL,
+    effort: EFFORT,
+    system: SYSTEM_PROMPT,
+    prompt: transcript(messages),
+    onText: onTextChannel,
+  });
+  done = true; // Ignore late chunks: the caller shows `reply`, the clean final text.
+  return reply;
+}
+
+function cancelCurrent() {
+  if (!current) return;
+  current.aborted = true;
+  current.cancel();
+}
+
 async function ask(content: string, shown?: string) {
-  if (!client || streaming.value) return;
+  if (streaming.value) return;
   const conversation = history;
   conversation.push({ role: "user", content });
   if (shown) chat.value.push({ role: "user", text: shown });
   chat.value.push({ role: "assistant", text: "" });
   const answer = chat.value[chat.value.length - 1];
+  const onText = (delta: string) => {
+    answer.text += delta;
+  };
   error.value = "";
   streaming.value = true;
-
-  const stream = client.messages.stream({
-    model: MODEL,
-    max_tokens: 8000,
-    system: SYSTEM_PROMPT,
-    output_config: { effort: "low" },
-    messages: [...conversation],
-  });
-  current = stream;
-  stream.on("text", (delta) => {
-    answer.text += delta;
-  });
+  const request: Request = { id: nextRequestId++, aborted: false, cancel: () => {} };
+  current = request;
 
   try {
-    const message = await stream.finalMessage();
-    if (message.stop_reason === "refusal") {
-      throw new Error("El modelo ha preferido no responder a esto. Prueba a reformularlo.");
-    }
-    conversation.push({ role: "assistant", content: message.content });
+    const reply = client
+      ? await viaApi(client, [...conversation], onText, request)
+      : await viaSubscription([...conversation], onText, request);
+    if (request.aborted) return;
+    // Claude Code may retry a failed stream and repeat or drop chunks; its final text is the clean one.
+    if (typeof reply === "string") answer.text = reply;
+    conversation.push({ role: "assistant", content: reply });
   } catch (e) {
-    if (e instanceof Anthropic.APIUserAbortError) return; // A new selection or Esc cancelled it.
+    if (request.aborted) return; // A new selection or Esc cancelled it.
     conversation.pop(); // Drop the unanswered question so the next request stays valid.
     error.value = describe(e);
   } finally {
-    if (current === stream) {
+    if (current === request) {
       current = null;
       streaming.value = false;
     }
@@ -127,7 +194,7 @@ async function ask(content: string, shown?: string) {
 }
 
 function start(selection: Selection) {
-  current?.abort();
+  cancelCurrent();
   current = null;
   streaming.value = false;
   history = [];
@@ -155,7 +222,7 @@ function submit() {
 }
 
 function close() {
-  current?.abort();
+  cancelCurrent();
   void getCurrentWindow().hide();
 }
 
@@ -177,15 +244,14 @@ onMounted(async () => {
   if (apiKey) {
     // Safe here: the key never leaves this machine except to the Anthropic API.
     client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
-  } else {
-    missingKey.value = true;
+    backend.value = "api";
   }
   unlistenExplain = await listen<Selection>("explain", (event) => start(event.payload));
 });
 
 // In dev, hot reload remounts the component; without this, old copies keep listening and calling the API.
 onUnmounted(() => {
-  current?.abort();
+  cancelCurrent();
   window.removeEventListener("keydown", onKeydown);
   unlistenExplain?.();
 });
@@ -195,14 +261,12 @@ onUnmounted(() => {
   <main class="popup">
     <header data-tauri-drag-region>
       <span class="term" data-tauri-drag-region :title="term">{{ term || "Explicador" }}</span>
+      <span class="backend" data-tauri-drag-region>{{ backend === "api" ? "API" : "Suscripción" }}</span>
       <button class="close" title="Cerrar (Esc)" @click="close">×</button>
     </header>
 
     <section ref="body" class="body">
-      <p v-if="missingKey" class="notice">
-        Falta la variable de entorno ANTHROPIC_API_KEY. Defínela y vuelve a abrir la app.
-      </p>
-      <p v-else-if="!term" class="notice">
+      <p v-if="!term" class="notice">
         Selecciona un texto en cualquier app y pulsa Win+Alt+E, o escribe abajo qué quieres que te explique.
       </p>
 
@@ -225,10 +289,9 @@ onUnmounted(() => {
       <input
         ref="inputEl"
         v-model="input"
-        :disabled="missingKey"
         :placeholder="term ? 'Pregunta lo que no entiendas…' : '¿Qué quieres que te explique?'"
       />
-      <button :disabled="!input.trim() || streaming || missingKey">Enviar</button>
+      <button :disabled="!input.trim() || streaming">Enviar</button>
     </form>
   </main>
 </template>
@@ -293,6 +356,11 @@ header {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.backend {
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .close {
