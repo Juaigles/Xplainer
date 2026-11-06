@@ -1,4 +1,5 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::{
     io::{BufRead, BufReader, Read, Write},
     os::windows::process::CommandExt,
@@ -14,7 +15,7 @@ use tauri::{
     ipc::Channel,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager, PhysicalPosition, State, WindowEvent,
+    AppHandle, Emitter, Manager, PhysicalPosition, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use windows::Win32::{
@@ -39,22 +40,19 @@ struct Selection {
     window_title: String,
 }
 
-#[tauri::command]
-fn api_key() -> Option<String> {
-    std::env::var("ANTHROPIC_API_KEY").ok().filter(|key| !key.is_empty())
-}
-
-/// Hides the console window that Windows would open for the child process.
+/// Hides the console window that Windows would open for a child process.
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const OLLAMA_URL: &str = "http://127.0.0.1:11434";
 
-/// Tracks the `claude -p` request in flight. Request ids only grow, so cancelling one also
-/// covers every older one: a cancel that arrives before its request is registered still counts.
+/// Tracks the answer in flight, whatever model gives it. Request ids only grow, so cancelling
+/// one also covers every older one: a cancel that arrives before its request starts still counts.
 #[derive(Default)]
-struct ClaudeCode(Mutex<Requests>);
+struct Answers(Mutex<Requests>);
 
 #[derive(Default)]
 struct Requests {
     cancelled_up_to: u64,
+    /// The request in flight and, for the CLIs, its process.
     running: Option<(u64, Option<Child>)>,
 }
 
@@ -69,13 +67,25 @@ impl Requests {
 
     fn kill_running(&mut self) {
         if let Some((_, Some(child))) = self.running.as_mut() {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_tree(child);
         }
     }
 }
 
-impl ClaudeCode {
+/// `codex` may start through a .cmd launcher (npm, Volta), so killing only our child would
+/// leave the real process running: kill the whole process tree.
+fn kill_tree(child: &mut Child) {
+    let _ = Command::new("taskkill")
+        .args(["/PID", &child.id().to_string(), "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+impl Answers {
     /// Tracks a new request and stops the previous one: one answer at a time. Fails if the
     /// request was already cancelled or a newer one has started.
     fn begin(&self, request_id: u64) -> Result<(), String> {
@@ -96,8 +106,7 @@ impl ClaudeCode {
             requests.running = Some((request_id, Some(child)));
             Ok(())
         } else {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_tree(&mut child);
             Err("cancelled".into())
         }
     }
@@ -111,64 +120,70 @@ impl ClaudeCode {
         }
     }
 
-    /// Stops tracking the request; returns its process unless it was cancelled.
-    fn finish(&self, request_id: u64) -> Option<Child> {
+    fn is_live(&self, request_id: u64) -> bool {
+        self.0.lock().unwrap().is_live(request_id)
+    }
+
+    /// Stops tracking the request. Fails if it was cancelled or replaced; otherwise returns
+    /// its process, if it has one.
+    fn finish(&self, request_id: u64) -> Result<Option<Child>, String> {
         let mut requests = self.0.lock().unwrap();
-        if !requests.is_current(request_id) {
-            return None; // A newer request took over: leave it alone.
+        if !requests.is_live(request_id) {
+            if requests.is_current(request_id) {
+                requests.running = None; // Cancelled: its process is already dead.
+            }
+            return Err("cancelled".into());
         }
-        let live = requests.is_live(request_id);
-        let (_, child) = requests.running.take()?;
-        if live { child } else { None }
+        Ok(requests.running.take().and_then(|(_, child)| child))
     }
 }
 
 #[tauri::command]
-fn cancel_claude_code(claude: State<'_, ClaudeCode>, request_id: u64) {
-    claude.cancel(request_id);
-}
-
-/// Answers with the user's Claude subscription instead of the API: runs Claude Code
-/// headless, streams the text through `on_text` and returns the full answer.
-#[tauri::command]
-async fn ask_claude_code(
-    app: AppHandle,
-    request_id: u64,
-    model: String,
-    effort: String,
-    system: String,
-    prompt: String,
-    on_text: Channel<String>,
-) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let claude = app.state::<ClaudeCode>();
-        run_claude_code(claude.inner(), request_id, &model, &effort, &system, &prompt, &on_text)
+async fn cancel_answer(app: AppHandle, request_id: u64) -> Result<(), String> {
+    // Off the UI thread: killing a process tree waits for `taskkill`.
+    blocking(app, move |answers| {
+        answers.cancel(request_id);
+        Ok(())
     })
     .await
-    .map_err(|error| error.to_string())?
 }
 
-fn run_claude_code(
-    claude: &ClaudeCode,
-    request_id: u64,
-    model: &str,
-    effort: &str,
-    system: &str,
-    prompt: &str,
-    on_text: &Channel<String>,
-) -> Result<String, String> {
-    claude.begin(request_id)?;
+/// Runs blocking work (processes, HTTP) off the async runtime.
+async fn blocking<T: Send + 'static>(
+    app: AppHandle,
+    work: impl FnOnce(&Answers) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(move || work(app.state::<Answers>().inner()))
+        .await
+        .map_err(|error| error.to_string())?
+}
 
-    let spawned = Command::new("claude")
-        .args([
-            "-p", "--model", model, "--effort", effort, "--system-prompt", system,
-            "--output-format", "stream-json", "--include-partial-messages", "--verbose",
-            // A plain question-answer call: no tools, MCP servers, skills or saved session.
-            // No setting sources at all: with "project", Claude Code would walk up from the
-            // working directory and load the user's own ~/.claude/CLAUDE.md as instructions.
-            "--tools", "", "--strict-mcp-config", "--disable-slash-commands",
-            "--setting-sources", "", "--no-session-persistence",
-        ])
+/// Values that end up on a command line must be plain words (`cmd` would interpret `&`, `|`...).
+fn plain_word(value: &str) -> Result<&str, String> {
+    let plain = !value.is_empty()
+        && value.chars().all(|c| c.is_ascii_alphanumeric() || "._:-".contains(c));
+    if plain { Ok(value) } else { Err(format!("Valor no válido: {value}")) }
+}
+
+#[derive(Default)]
+struct Outcome {
+    answer: Option<String>,
+    failure: Option<String>,
+    /// An error the CLI may still recover from (e.g. a reconnect); shown only if no answer arrives.
+    last_error: Option<String>,
+}
+
+/// Runs a CLI that prints JSON events on stdout. `on_event` streams text and records the outcome.
+fn run_cli(
+    answers: &Answers,
+    request_id: u64,
+    mut command: Command,
+    prompt: &str,
+    name: &str,
+    mut on_event: impl FnMut(&Value, &mut Outcome),
+) -> Result<String, String> {
+    answers.begin(request_id)?;
+    let spawned = command
         .current_dir(std::env::temp_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -178,9 +193,9 @@ fn run_claude_code(
     let mut child = match spawned {
         Ok(child) => child,
         Err(error) => {
-            claude.finish(request_id);
+            let _ = answers.finish(request_id);
             return Err(format!(
-                "No se pudo ejecutar Claude Code (`claude`). Instálalo con el instalador nativo e inicia sesión. {error}"
+                "No se pudo ejecutar {name}: {error}. Comprueba que está instalado y con la sesión iniciada."
             ));
         }
     };
@@ -188,7 +203,7 @@ fn run_claude_code(
     let mut stdin = child.stdin.take().expect("stdin is piped");
     let stdout = child.stdout.take().expect("stdout is piped");
     let mut stderr = child.stderr.take().expect("stderr is piped");
-    claude.attach(request_id, child)?;
+    answers.attach(request_id, child)?;
 
     // The prompt goes through stdin: no command-line length limit or quoting issues.
     let _ = stdin.write_all(prompt.as_bytes());
@@ -199,47 +214,253 @@ fn run_claude_code(
         text
     });
 
-    let mut answer = None;
-    let mut failure = None;
+    let mut outcome = Outcome::default();
     for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-        let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
-        match event["type"].as_str() {
-            Some("stream_event") => {
-                let delta = &event["event"]["delta"];
-                if delta["type"] == "text_delta" {
-                    if let Some(text) = delta["text"].as_str() {
-                        let _ = on_text.send(text.to_string());
-                    }
-                }
-            }
-            Some("result") => {
-                let text = event["result"].as_str().unwrap_or_default().to_string();
-                if event["is_error"] == true {
-                    // Some error results carry an `errors` list instead of `result`.
-                    let errors = event["errors"].as_array().map(|errors| {
-                        errors.iter().filter_map(|error| error.as_str()).collect::<Vec<_>>().join("; ")
-                    });
-                    failure = Some(if text.is_empty() { errors.unwrap_or_default() } else { text });
-                } else {
-                    answer = Some(text);
-                }
-            }
-            _ => {}
+        if let Ok(event) = serde_json::from_str::<Value>(&line) {
+            on_event(&event, &mut outcome);
         }
     }
 
-    let Some(mut child) = claude.finish(request_id) else {
-        return Err("cancelled".into());
-    };
+    let mut child = answers.finish(request_id)?.ok_or_else(|| "cancelled".to_string())?;
     let status = child.wait().map_err(|error| error.to_string())?;
     let stderr = stderr_reader.join().unwrap_or_default();
+    let Outcome { answer, failure, last_error } = outcome;
     match (answer, failure) {
-        (_, Some(message)) if !message.is_empty() => Err(format!("Claude Code: {message}")),
+        (_, Some(message)) if !message.is_empty() => Err(format!("{name}: {message}")),
         (Some(text), None) if status.success() && !text.trim().is_empty() => Ok(text),
-        _ => Err(format!("Claude Code no respondió. {}", stderr.trim())),
+        _ => Err(format!("{name} no respondió. {}", last_error.unwrap_or(stderr).trim())),
     }
+}
+
+/// Claude with the user's subscription: Claude Code headless, streaming the text.
+#[tauri::command]
+async fn ask_claude_code(
+    app: AppHandle,
+    request_id: u64,
+    model: String,
+    effort: String,
+    system: String,
+    prompt: String,
+    on_text: Channel<String>,
+) -> Result<String, String> {
+    blocking(app, move |answers| {
+        let mut command = Command::new("claude");
+        command.args([
+            "-p", "--model", &model, "--effort", &effort, "--system-prompt", &system,
+            "--output-format", "stream-json", "--include-partial-messages", "--verbose",
+            // A plain question-answer call: no tools, MCP servers, skills or saved session.
+            // No setting sources at all: with "project", Claude Code would walk up from the
+            // working directory and load the user's own ~/.claude/CLAUDE.md as instructions.
+            "--tools", "", "--strict-mcp-config", "--disable-slash-commands",
+            "--setting-sources", "", "--no-session-persistence",
+        ]);
+        // Use the subscription login: with these set, `claude -p` would bill the API instead.
+        command.env_remove("ANTHROPIC_API_KEY").env_remove("ANTHROPIC_AUTH_TOKEN");
+        run_cli(answers, request_id, command, &prompt, "Claude Code", |event, outcome| {
+            match event["type"].as_str() {
+                Some("stream_event") => {
+                    let delta = &event["event"]["delta"];
+                    if delta["type"] == "text_delta" {
+                        if let Some(text) = delta["text"].as_str() {
+                            let _ = on_text.send(text.to_string());
+                        }
+                    }
+                }
+                Some("result") => {
+                    let text = event["result"].as_str().unwrap_or_default().to_string();
+                    if event["is_error"] == true {
+                        // Some error results carry an `errors` list instead of `result`.
+                        let errors = event["errors"].as_array().map(|errors| {
+                            errors.iter().filter_map(|error| error.as_str()).collect::<Vec<_>>().join("; ")
+                        });
+                        outcome.failure = Some(if text.is_empty() { errors.unwrap_or_default() } else { text });
+                    } else {
+                        outcome.answer = Some(text);
+                    }
+                }
+                _ => {}
+            }
+        })
+    })
+    .await
+}
+
+/// ChatGPT models with the user's subscription: Codex headless. Codex sends no partial text,
+/// only the final answer.
+#[tauri::command]
+async fn ask_codex(
+    app: AppHandle,
+    request_id: u64,
+    model: String,
+    effort: String,
+    prompt: String,
+    on_text: Channel<String>,
+) -> Result<String, String> {
+    blocking(app, move |answers| {
+        let effort_setting = format!("model_reasoning_effort={}", plain_word(&effort)?);
+        // Through `cmd` so it also finds a `codex.cmd` launcher. Every argument is a plain word.
+        let mut command = Command::new("cmd");
+        command.args([
+            "/d", "/c", "codex", "exec", "--json", "--ephemeral", "--skip-git-repo-check",
+            // A plain question-answer call: no user config or rules, project instructions,
+            // shell, app connectors, writes or web. The selected text is untrusted input.
+            "--ignore-user-config", "--ignore-rules", "-s", "read-only",
+            "--disable", "shell_tool", "--disable", "apps", "-c", "project_doc_max_bytes=0",
+            "-c", "web_search=disabled", "-c", &effort_setting, "-m", plain_word(&model)?, "-",
+        ]);
+        // Use the ChatGPT login: with this set, Codex would bill the API instead.
+        command.env_remove("CODEX_API_KEY");
+        run_cli(answers, request_id, command, &prompt, "Codex", |event, outcome| {
+            on_codex_event(event, outcome, &on_text)
+        })
+    })
+    .await
+}
+
+fn on_codex_event(event: &Value, outcome: &mut Outcome, on_text: &Channel<String>) {
+    match event["type"].as_str() {
+        Some("item.completed") if event["item"]["type"] == "agent_message" => {
+            let text = event["item"]["text"].as_str().unwrap_or_default().to_string();
+            let _ = on_text.send(text.clone());
+            outcome.answer = Some(text);
+        }
+        Some("turn.failed") => outcome.failure = event["error"]["message"].as_str().map(String::from),
+        // Codex also reports errors it retries ("Reconnecting... 1/5"); they are not fatal.
+        Some("error") => outcome.last_error = event["message"].as_str().map(String::from),
+        _ => {}
+    }
+}
+
+#[derive(Deserialize)]
+struct ChatMessage {
+    role: String,
+    content: String,
+}
+
+/// Free models served by Ollama (local ones and Ollama's cloud ones), streaming the text.
+#[tauri::command]
+async fn ask_ollama(
+    app: AppHandle,
+    request_id: u64,
+    model: String,
+    system: String,
+    messages: Vec<ChatMessage>,
+    on_text: Channel<String>,
+) -> Result<String, String> {
+    blocking(app, move |answers| {
+        answers.begin(request_id)?;
+        let answer = run_ollama(answers, request_id, &model, &system, &messages, &on_text);
+        answers.finish(request_id).and(answer) // A cancel wins over whatever arrived.
+    })
+    .await
+}
+
+fn run_ollama(
+    answers: &Answers,
+    request_id: u64,
+    model: &str,
+    system: &str,
+    messages: &[ChatMessage],
+    on_text: &Channel<String>,
+) -> Result<String, String> {
+    let mut chat = vec![json!({ "role": "system", "content": system })];
+    chat.extend(messages.iter().map(|message| json!({ "role": message.role, "content": message.content })));
+    let mut body = json!({ "model": model, "messages": chat, "stream": true, "think": false });
+    let url = format!("{OLLAMA_URL}/api/chat");
+    let agent = ollama(None); // No timeout: loading a model can take minutes on a CPU.
+    let send = |body: &Value| {
+        agent
+            .post(&url)
+            .send_json(body)
+            .map_err(|error| format!("No se pudo conectar con Ollama. ¿Está en marcha? ({error})"))
+    };
+    let mut response = send(&body)?;
+    let mut failure = response_error(&mut response);
+    // Models that cannot think reject `think`: ask again without it.
+    if failure.as_deref().is_some_and(|error| error.contains("think")) {
+        body.as_object_mut().expect("body is an object").remove("think");
+        response = send(&body)?;
+        failure = response_error(&mut response);
+    }
+    if let Some(error) = failure {
+        return Err(format!("Ollama: {error}"));
+    }
+
+    let mut answer = String::new();
+    let mut done = false;
+    for line in BufReader::new(response.into_body().into_reader()).lines() {
+        // Cancelled: stop reading. Dropping the response closes the connection and Ollama stops.
+        if !answers.is_live(request_id) {
+            break;
+        }
+        let line = line.map_err(|error| format!("La respuesta de Ollama se cortó: {error}"))?;
+        let Ok(event) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if let Some(error) = event["error"].as_str() {
+            return Err(format!("Ollama: {error}"));
+        }
+        // Only the answer: thinking models put their reasoning in `message.thinking`.
+        if let Some(text) = event["message"]["content"].as_str().filter(|text| !text.is_empty()) {
+            answer.push_str(text);
+            let _ = on_text.send(text.to_string());
+        }
+        done = event["done"] == true;
+    }
+    if !done {
+        Err("La respuesta de Ollama se cortó antes de terminar.".into())
+    } else if answer.trim().is_empty() {
+        Err("Ollama no devolvió respuesta.".into())
+    } else {
+        Ok(answer)
+    }
+}
+
+/// Talks to the local Ollama directly (no proxy from the environment). HTTP errors come back
+/// as responses, so their `error` text can be shown.
+fn ollama(timeout: Option<Duration>) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .proxy(None)
+        .http_status_as_error(false)
+        .timeout_global(timeout)
+        .build()
+        .into()
+}
+
+/// The `error` text of a failed Ollama response, or `None` if it succeeded.
+fn response_error(response: &mut ureq::http::Response<ureq::Body>) -> Option<String> {
+    let status = response.status();
+    if status.is_success() {
+        return None;
+    }
+    let body: Value = response.body_mut().read_json().unwrap_or(Value::Null);
+    Some(body["error"].as_str().map(String::from).unwrap_or_else(|| format!("error HTTP {status}")))
+}
+
+/// Models in Ollama that can chat; empty if Ollama is not running.
+#[tauri::command]
+async fn ollama_models() -> Vec<String> {
+    tauri::async_runtime::spawn_blocking(|| -> Option<Vec<String>> {
+        let tags: Value = ollama(Some(Duration::from_secs(3)))
+            .get(format!("{OLLAMA_URL}/api/tags"))
+            .call()
+            .ok()?
+            .body_mut()
+            .read_json()
+            .ok()?;
+        let models = tags["models"].as_array()?;
+        // Embedding-only models cannot answer. Older Ollama versions list no capabilities.
+        let can_chat = |model: &&Value| {
+            model["capabilities"]
+                .as_array()
+                .is_none_or(|capabilities| capabilities.iter().any(|capability| capability == "completion"))
+        };
+        Some(models.iter().filter(can_chat).filter_map(|model| model["name"].as_str().map(String::from)).collect())
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_default()
 }
 
 fn foreground_window_title() -> String {
@@ -370,8 +591,14 @@ pub fn run() {
                 })
                 .build(),
         )
-        .manage(ClaudeCode::default())
-        .invoke_handler(tauri::generate_handler![api_key, ask_claude_code, cancel_claude_code])
+        .manage(Answers::default())
+        .invoke_handler(tauri::generate_handler![
+            ask_claude_code,
+            ask_codex,
+            ask_ollama,
+            ollama_models,
+            cancel_answer
+        ])
         .on_window_event(|window, event| {
             // Alt+F4 hides the popup instead of quitting; quit from the tray icon.
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -401,3 +628,5 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+

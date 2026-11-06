@@ -10,7 +10,6 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^1.6.0",
     "@tauri-apps/api": "^2",
     "vue": "^3.5.13"
   },

@@ -1,14 +1,10 @@
 <script setup lang="ts">
-import Anthropic from "@anthropic-ai/sdk";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 
-// Fast model on purpose: you are waiting with the popup open, so latency matters most.
-const MODEL = "claude-haiku-5-5";
 const EFFORT = "low";
-const REFUSAL = "El modelo ha preferido no responder a esto. Prueba a reformularlo.";
 
 const SYSTEM_PROMPT = `Eres un profesor paciente que explica cualquier término, frase o concepto que le llegue a una persona curiosa que no es experta en ese tema.
 
@@ -37,6 +33,27 @@ interface ChatEntry {
   text: string;
 }
 
+/** The conversation as every model receives it: plain text, so you can switch models midway. */
+interface Message {
+  role: "user" | "assistant";
+  content: string;
+}
+
+/** A model in the selector: Claude and Codex use your subscriptions; Ollama models are free. */
+interface ModelOption {
+  id: string;
+  label: string;
+  provider: "claude" | "codex" | "ollama";
+  model: string;
+}
+
+// Fast models on purpose: you are waiting with the popup open, so latency matters most.
+const SUBSCRIPTION_MODELS: ModelOption[] = [
+  { id: "claude", label: "Claude Haiku · suscripción", provider: "claude", model: "claude-haiku-5-5" },
+  { id: "codex", label: "Codex GPT-5.6 Luna · suscripción", provider: "codex", model: "gpt-5.6-luna" },
+];
+const STORAGE_KEY = "explicador.model";
+
 const SUGGESTION_LINE = /^\s*>>?\s*/;
 
 const term = ref("");
@@ -44,24 +61,53 @@ const chat = ref<ChatEntry[]>([]);
 const input = ref("");
 const error = ref("");
 const streaming = ref(false);
-// With ANTHROPIC_API_KEY we pay per use through the API; without it, `claude -p` uses the subscription.
-const backend = ref<"api" | "subscription">("subscription");
+const ollamaModels = ref<string[]>([]);
+const selectedId = ref(readStoredModel());
 const body = ref<HTMLElement>();
 const inputEl = ref<HTMLInputElement>();
 
-/** One answer in flight; `cancel` aborts the API stream or kills the `claude -p` process. */
+const models = computed<ModelOption[]>(() => [
+  ...SUBSCRIPTION_MODELS,
+  ...ollamaModels.value.map((name) => ({
+    id: `ollama:${name}`,
+    label: `${name} · ${name.includes("cloud") ? "nube de Ollama" : "local"}`,
+    provider: "ollama" as const,
+    model: name,
+  })),
+]);
+
+/** One answer in flight; `cancel` stops it in Rust. */
 interface Request {
   id: number;
   aborted: boolean;
   cancel: () => void;
 }
 
-let client: Anthropic | null = null;
-// Full conversation, sent on every follow-up. In API mode it keeps the thinking blocks unchanged.
-let history: Anthropic.MessageParam[] = [];
+// Full conversation, sent on every follow-up.
+let history: Message[] = [];
 let current: Request | null = null;
 // Ids must only grow, even across hot reloads: Rust treats cancelling an id as cancelling every older one.
 let nextRequestId = Date.now();
+
+function readStoredModel(): string {
+  try {
+    return localStorage.getItem(STORAGE_KEY) ?? "claude";
+  } catch {
+    return "claude";
+  }
+}
+
+watch(selectedId, (id) => {
+  try {
+    localStorage.setItem(STORAGE_KEY, id);
+  } catch {
+    // Only a convenience: without storage the app starts with Claude.
+  }
+});
+
+async function refreshOllamaModels() {
+  ollamaModels.value = await invoke<string[]>("ollama_models");
+}
 
 const suggestions = computed(() => {
   const last = chat.value[chat.value.length - 1];
@@ -86,51 +132,20 @@ function firstPrompt(text: string, windowTitle: string): string {
   return `Explícame esto:\n<seleccion>\n${text}\n</seleccion>${context}`;
 }
 
-function describe(e: unknown): string {
-  if (e instanceof Anthropic.AuthenticationError) return "La API key no es válida.";
-  if (e instanceof Anthropic.RateLimitError) return "Demasiadas peticiones seguidas. Espera un momento.";
-  if (e instanceof Anthropic.APIConnectionError) return "No hay conexión con la API de Claude.";
-  if (e instanceof Anthropic.APIError) {
-    // Errors that arrive mid-stream have no HTTP status and carry the raw JSON body in `message`.
-    if (e.type === "overloaded_error") return "Claude está saturado. Prueba de nuevo en unos segundos.";
-    return `Error de la API${e.status ? ` (${e.status})` : ""}: ${e.apiMessage ?? e.message}`;
-  }
-  return e instanceof Error ? e.message : String(e);
-}
-
-async function viaApi(
-  api: Anthropic,
-  messages: Anthropic.MessageParam[],
-  onText: (delta: string) => void,
-  request: Request,
-): Promise<Anthropic.MessageParam["content"]> {
-  const stream = api.messages.stream({
-    model: MODEL,
-    max_tokens: 8000,
-    system: SYSTEM_PROMPT,
-    output_config: { effort: EFFORT },
-    messages,
-  });
-  request.cancel = () => stream.abort();
-  stream.on("text", onText);
-  const message = await stream.finalMessage();
-  if (message.stop_reason === "refusal") throw new Error(REFUSAL);
-  return message.content;
-}
-
-/** `claude -p` keeps no session here, so each call carries the conversation so far as text. */
-function transcript(messages: Anthropic.MessageParam[]): string {
-  // In subscription mode every message content is a plain string.
-  if (messages.length === 1) return messages[0].content as string;
+/** The CLIs keep no session here, so each call carries the conversation so far as text. */
+function transcript(messages: Message[]): string {
+  if (messages.length === 1) return messages[0].content;
   const turns = messages.map((message) => {
     const tag = message.role === "user" ? "usuario" : "profesor";
-    return `<${tag}>\n${message.content as string}\n</${tag}>`;
+    return `<${tag}>\n${message.content}\n</${tag}>`;
   });
   return `Conversación hasta ahora:\n\n${turns.join("\n\n")}\n\nResponde al último mensaje del usuario.`;
 }
 
-async function viaSubscription(
-  messages: Anthropic.MessageParam[],
+/** Asks the chosen model through Rust; partial text arrives through `onText` while it answers. */
+async function answerWith(
+  option: ModelOption,
+  messages: Message[],
   onText: (delta: string) => void,
   request: Request,
 ): Promise<string> {
@@ -139,15 +154,27 @@ async function viaSubscription(
   onTextChannel.onmessage = (delta) => {
     if (!done) onText(delta);
   };
-  request.cancel = () => void invoke("cancel_claude_code", { requestId: request.id });
-  const reply = await invoke<string>("ask_claude_code", {
-    requestId: request.id,
-    model: MODEL,
-    effort: EFFORT,
-    system: SYSTEM_PROMPT,
-    prompt: transcript(messages),
-    onText: onTextChannel,
-  });
+  request.cancel = () => void invoke("cancel_answer", { requestId: request.id });
+  const common = { requestId: request.id, model: option.model, onText: onTextChannel };
+  let reply: string;
+  if (option.provider === "claude") {
+    reply = await invoke<string>("ask_claude_code", {
+      ...common,
+      effort: EFFORT,
+      system: SYSTEM_PROMPT,
+      prompt: transcript(messages),
+    });
+  } else if (option.provider === "codex") {
+    // Codex runs through `cmd`, which cannot carry these multi-line instructions as an
+    // argument, so they go first in the prompt.
+    reply = await invoke<string>("ask_codex", {
+      ...common,
+      effort: EFFORT,
+      prompt: `${SYSTEM_PROMPT}\n\n---\n\n${transcript(messages)}`,
+    });
+  } else {
+    reply = await invoke<string>("ask_ollama", { ...common, system: SYSTEM_PROMPT, messages });
+  }
   done = true; // Ignore late chunks: the caller shows `reply`, the clean final text.
   return reply;
 }
@@ -158,8 +185,27 @@ function cancelCurrent() {
   current.cancel();
 }
 
+const UNAVAILABLE = "Ese modelo no está disponible (¿está Ollama en marcha?). Elige otro en el desplegable.";
+
+// Bumped by start(): an ask still waiting for the model list then belongs to an old selection.
+let generation = 0;
+
+async function chosenModel(): Promise<ModelOption | undefined> {
+  const find = () => models.value.find((model) => model.id === selectedId.value);
+  // Ollama may have started after the app: look again before giving up.
+  if (!find() && selectedId.value.startsWith("ollama:")) await refreshOllamaModels();
+  return find();
+}
+
 async function ask(content: string, shown?: string) {
   if (streaming.value) return;
+  const started = generation;
+  const option = await chosenModel();
+  if (started !== generation || streaming.value) return;
+  if (!option) {
+    error.value = UNAVAILABLE;
+    return;
+  }
   const conversation = history;
   conversation.push({ role: "user", content });
   if (shown) chat.value.push({ role: "user", text: shown });
@@ -174,17 +220,15 @@ async function ask(content: string, shown?: string) {
   current = request;
 
   try {
-    const reply = client
-      ? await viaApi(client, [...conversation], onText, request)
-      : await viaSubscription([...conversation], onText, request);
+    const reply = await answerWith(option, [...conversation], onText, request);
     if (request.aborted) return;
-    // Claude Code may retry a failed stream and repeat or drop chunks; its final text is the clean one.
-    if (typeof reply === "string") answer.text = reply;
+    // A CLI may retry a failed stream and repeat or drop chunks; the final text is the clean one.
+    answer.text = reply;
     conversation.push({ role: "assistant", content: reply });
   } catch (e) {
     if (request.aborted) return; // A new selection or Esc cancelled it.
     conversation.pop(); // Drop the unanswered question so the next request stays valid.
-    error.value = describe(e);
+    error.value = e instanceof Error ? e.message : String(e);
   } finally {
     if (current === request) {
       current = null;
@@ -194,6 +238,7 @@ async function ask(content: string, shown?: string) {
 }
 
 function start(selection: Selection) {
+  generation++;
   cancelCurrent();
   current = null;
   streaming.value = false;
@@ -209,9 +254,13 @@ function start(selection: Selection) {
   }
 }
 
-function submit() {
+async function submit() {
   const text = input.value.trim();
   if (!text) return;
+  if (!(await chosenModel())) {
+    error.value = UNAVAILABLE; // Keep the typed text so it can be sent after choosing a model.
+    return;
+  }
   input.value = "";
   if (history.length === 0) {
     term.value = text;
@@ -240,16 +289,12 @@ let unlistenExplain: UnlistenFn | undefined;
 
 onMounted(async () => {
   window.addEventListener("keydown", onKeydown);
-  const apiKey = await invoke<string | null>("api_key");
-  if (apiKey) {
-    // Safe here: the key never leaves this machine except to the Anthropic API.
-    client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
-    backend.value = "api";
-  }
+  // Listen first: a shortcut pressed while Ollama is slow to answer must not be lost.
   unlistenExplain = await listen<Selection>("explain", (event) => start(event.payload));
+  void refreshOllamaModels();
 });
 
-// In dev, hot reload remounts the component; without this, old copies keep listening and calling the API.
+// In dev, hot reload remounts the component; without this, old copies keep listening and answering.
 onUnmounted(() => {
   cancelCurrent();
   window.removeEventListener("keydown", onKeydown);
@@ -261,7 +306,9 @@ onUnmounted(() => {
   <main class="popup">
     <header data-tauri-drag-region>
       <span class="term" data-tauri-drag-region :title="term">{{ term || "Explicador" }}</span>
-      <span class="backend" data-tauri-drag-region>{{ backend === "api" ? "API" : "Suscripción" }}</span>
+      <select v-model="selectedId" class="model" title="Modelo que explica" @focus="refreshOllamaModels">
+        <option v-for="option in models" :key="option.id" :value="option.id">{{ option.label }}</option>
+      </select>
       <button class="close" title="Cerrar (Esc)" @click="close">×</button>
     </header>
 
@@ -358,9 +405,15 @@ header {
   white-space: nowrap;
 }
 
-.backend {
+.model {
+  max-width: 45%;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
   font-size: 12px;
-  color: var(--muted);
 }
 
 .close {
