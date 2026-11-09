@@ -40,6 +40,8 @@ Bajo cada respuesta, **Más simple** y **Más técnico** cambian el nivel de la 
 
 **Guardar nota** crea un `.md` con la conversación en tu carpeta de notas, por ejemplo una carpeta de tu vault de Obsidian. La carpeta se elige en **⚙ Ajustes** y tiene que existir. Nunca sobrescribe otra nota: si guardas otra vez tras repreguntar, actualiza la misma.
 
+**🕘 Historial** guarda cada conversación para buscarla (sin distinguir mayúsculas ni acentos) y retomarla. Se guarda solo en tu equipo, en `%APPDATA%\com.kiook.xplanator\history.json`, con las 500 más recientes. Como el texto puede venir de cualquier app, en **⚙ Ajustes** puedes pausarlo, borrarlo entero y editar la lista de palabras que, si aparecen en el título de la ventana de origen, impiden guardar (de serie: gestores de contraseñas, bancos y navegación privada). Cada entrada se borra con su ×.
+
 Para explicar una palabra de la respuesta, selecciónala y pulsa el botón **Explicar «…»** que aparece al lado, o Alt+X. Se abre como un nivel más, con un rastro bajo la cabecera (TCP › handshake › SYN) para volver a cualquier nivel anterior.
 
 ## Desarrollar

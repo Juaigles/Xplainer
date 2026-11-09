@@ -64,10 +64,20 @@ interface SavedNote {
 
 /** An explanation left open while a deeper one is shown: "TCP › handshake › SYN". */
 interface Level {
+  id: number;
   term: string;
   chat: ChatEntry[];
   history: Message[];
   note: SavedNote | null;
+}
+
+/** One conversation in the history file, rewritten after each answer. */
+interface HistoryEntry {
+  id: number; // When the conversation started.
+  date: string; // When it was last answered.
+  term: string;
+  source: string;
+  messages: Message[];
 }
 
 /** A model in the selector: Claude and Codex use your subscriptions; Ollama models are free. */
@@ -85,6 +95,15 @@ const SUBSCRIPTION_MODELS: ModelOption[] = [
 ];
 const STORAGE_KEY = "xplanator.model";
 const NOTES_FOLDER_KEY = "xplanator.notesFolder";
+const HISTORY_ENABLED_KEY = "xplanator.historyEnabled";
+const HISTORY_EXCLUDED_KEY = "xplanator.historyExcluded";
+const HISTORY_LIMIT = 500;
+// Windows whose text must not reach the history file: password managers, banks, private browsing.
+const DEFAULT_EXCLUDED = [
+  "1Password", "Bitwarden", "KeePass", "KeePassXC", "LastPass", "Dashlane", "Proton Pass",
+  "banco", "banca", "bank", "BBVA", "Santander", "CaixaBank", "ING", "Sabadell", "Bankinter", "PayPal",
+  "InPrivate", "incógnito", "navegación privada", "private browsing",
+].join("\n");
 
 const SUGGESTION_LINE = /^\s*>>?\s*/;
 
@@ -112,9 +131,14 @@ const inputEl = ref<HTMLInputElement>();
 const trail = ref<Level[]>([]);
 /** Text selected inside an answer, offered as a deeper explanation next to the selection. */
 const picked = ref<{ text: string; top: number; left: number } | null>(null);
-const view = ref<"chat" | "settings">("chat");
+const view = ref<"chat" | "history" | "settings">("chat");
 const notesFolder = ref(stored(NOTES_FOLDER_KEY, ""));
 const note = ref<SavedNote | null>(null);
+const historyEnabled = ref(stored(HISTORY_ENABLED_KEY, "true") === "true");
+const historyExcluded = ref(stored(HISTORY_EXCLUDED_KEY, DEFAULT_EXCLUDED));
+const entries = ref<HistoryEntry[]>([]);
+const historyQuery = ref("");
+const confirmClear = ref(false);
 
 const models = computed<ModelOption[]>(() => [
   ...SUBSCRIPTION_MODELS,
@@ -137,6 +161,10 @@ interface Request {
 let history: Message[] = [];
 // Title of the window the first text was selected in; deeper levels keep it.
 let source = "";
+// Identifies the conversation on screen in the history.
+let conversationId = Date.now();
+// Until the history file is read, writing it could wipe what it holds.
+let historyReady = false;
 let current: Request | null = null;
 // Ids must only grow, even across hot reloads: Rust treats cancelling an id as cancelling every older one.
 let nextRequestId = Date.now();
@@ -160,6 +188,8 @@ function store(key: string, value: string) {
 
 watch(selectedId, (id) => store(STORAGE_KEY, id));
 watch(notesFolder, (folder) => store(NOTES_FOLDER_KEY, folder));
+watch(historyEnabled, (enabled) => store(HISTORY_ENABLED_KEY, String(enabled)));
+watch(historyExcluded, (words) => store(HISTORY_EXCLUDED_KEY, words));
 
 async function refreshOllamaModels() {
   ollamaModels.value = await invoke<string[]>("ollama_models");
@@ -306,6 +336,7 @@ async function ask(content: string, shown?: string) {
     // A CLI may retry a failed stream and repeat or drop chunks; the final text is the clean one.
     answer.text = reply;
     conversation.push({ role: "assistant", content: reply });
+    recordHistory();
   } catch (e) {
     if (request.aborted) return; // A new selection or Esc cancelled it.
     conversation.pop(); // Drop the unanswered question so the next request stays valid.
@@ -337,6 +368,7 @@ function start(selection: Selection) {
   history = [];
   chat.value = [];
   note.value = null;
+  conversationId = Date.now();
   source = selection.window_title;
   term.value = selection.text.trim();
   if (term.value) {
@@ -355,10 +387,11 @@ function explainDeeper(text: string) {
   if (!term.value) return start({ text: selected, window_title: "" });
   const parent = term.value;
   interrupt();
-  trail.value.push({ term: parent, chat: chat.value, history, note: note.value });
+  trail.value.push({ id: conversationId, term: parent, chat: chat.value, history, note: note.value });
   history = [];
   chat.value = [];
   note.value = null;
+  conversationId = Date.now();
   term.value = selected;
   void ask(firstPrompt(selected, `Aparece en una explicación sobre: ${parent}`));
 }
@@ -368,10 +401,103 @@ function goBack(index: number) {
   const level = trail.value[index];
   interrupt();
   trail.value = trail.value.slice(0, index);
+  conversationId = level.id;
   term.value = level.term;
   chat.value = level.chat;
   history = level.history;
   note.value = level.note;
+}
+
+/** Whether a word of the excluded list appears, as a whole word, in the window title. */
+function isExcluded(windowTitle: string): boolean {
+  const title = windowTitle.toLocaleLowerCase();
+  return historyExcluded.value
+    .split("\n")
+    .map((word) => word.trim().toLocaleLowerCase())
+    .filter(Boolean)
+    .some((word) => {
+      const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}($|[^\\p{L}\\p{N}])`, "u").test(title);
+    });
+}
+
+function saveHistory() {
+  if (!historyReady) return;
+  invoke("write_history", { history: JSON.stringify(entries.value) }).catch((e) => {
+    error.value = String(e);
+  });
+}
+
+/** Saves the conversation on screen, newest first, unless history is paused or the window excluded. */
+function recordHistory() {
+  if (!historyEnabled.value || isExcluded(source)) return;
+  const entry = { id: conversationId, date: new Date().toISOString(), term: term.value, source, messages: [...history] };
+  entries.value = [entry, ...entries.value.filter((old) => old.id !== entry.id)].slice(0, HISTORY_LIMIT);
+  saveHistory();
+}
+
+async function loadHistory() {
+  try {
+    const saved: unknown = JSON.parse(await invoke<string>("read_history"));
+    if (!Array.isArray(saved)) throw new Error("El fichero del historial no tiene el formato esperado.");
+    entries.value = saved;
+    historyReady = true;
+  } catch (e) {
+    error.value = `${e} El historial no se guardará hasta que se pueda leer.`;
+  }
+}
+
+/** Lowercase and without accents, so "explicacion" finds "explicación". */
+function searchable(text: string): string {
+  return text.normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase();
+}
+
+const foundEntries = computed(() => {
+  const query = searchable(historyQuery.value.trim());
+  if (!query) return entries.value;
+  return entries.value.filter((entry) =>
+    searchable([entry.term, ...entry.messages.map((message) => message.content)].join("\n")).includes(query),
+  );
+});
+
+/** Shows a saved conversation again; asking more continues it. */
+function openEntry(entry: HistoryEntry) {
+  interrupt();
+  trail.value = [];
+  note.value = null;
+  conversationId = entry.id;
+  source = entry.source;
+  term.value = entry.term;
+  history = [...entry.messages];
+  // The first message is the hidden prompt with the selection; quick follow-ups show their label.
+  chat.value = entry.messages.slice(1).map((message) => ({
+    role: message.role,
+    text: REPHRASINGS.find((option) => option.prompt === message.content)?.label ?? message.content,
+  }));
+}
+
+function forget(id: number) {
+  entries.value = entries.value.filter((entry) => entry.id !== id);
+  saveHistory();
+}
+
+let clearTimer: number | undefined;
+
+/** Asks for a second click before deleting everything. */
+function clearHistory() {
+  window.clearTimeout(clearTimer);
+  if (!confirmClear.value) {
+    confirmClear.value = true;
+    clearTimer = window.setTimeout(() => (confirmClear.value = false), 3000);
+    return;
+  }
+  confirmClear.value = false;
+  entries.value = [];
+  saveHistory();
+}
+
+function formatDate(iso: string): string {
+  return new Date(iso).toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" });
 }
 
 /** The conversation as Markdown, with properties that Obsidian shows and can search. */
@@ -418,8 +544,8 @@ const noteLabel = computed(() => {
   return note.value.entries === chat.value.length ? "Nota guardada ✓" : "Actualizar nota";
 });
 
-function toggleSettings() {
-  view.value = view.value === "settings" ? "chat" : "settings";
+function toggleView(panel: "history" | "settings") {
+  view.value = view.value === panel ? "chat" : panel;
 }
 
 function onBodyMouseup() {
@@ -450,6 +576,7 @@ async function submit() {
   if (history.length === 0) {
     term.value = text;
     source = "";
+    conversationId = Date.now();
     void ask(firstPrompt(text, ""));
   } else {
     void ask(text, text);
@@ -481,6 +608,7 @@ onMounted(async () => {
   // The shortcut pressed inside this popup, on a word of an answer.
   unlistenDeeper = await listen<Selection>("explain-deeper", (event) => explainDeeper(event.payload.text));
   void refreshOllamaModels();
+  void loadHistory();
 });
 
 // In dev, hot reload remounts the component; without this, old copies keep listening and answering.
@@ -499,9 +627,31 @@ onUnmounted(() => {
       <select v-model="selectedId" class="model" title="Modelo que explica" @focus="refreshOllamaModels">
         <option v-for="option in models" :key="option.id" :value="option.id">{{ option.label }}</option>
       </select>
-      <button class="icon" :class="{ active: view === 'settings' }" title="Ajustes" @click="toggleSettings">⚙</button>
+      <button class="icon" :class="{ active: view === 'history' }" title="Historial" @click="toggleView('history')">
+        🕘
+      </button>
+      <button class="icon" :class="{ active: view === 'settings' }" title="Ajustes" @click="toggleView('settings')">
+        ⚙
+      </button>
       <button class="close" title="Cerrar (Esc)" @click="close">×</button>
     </header>
+
+    <section v-if="view === 'history'" class="panel">
+      <input v-model="historyQuery" class="search" placeholder="Buscar en el historial…" />
+      <p v-if="!historyEnabled" class="notice">El historial está en pausa: lo nuevo no se guarda (Ajustes).</p>
+      <ul class="entries">
+        <li v-for="entry in foundEntries" :key="entry.id">
+          <button class="entry" :title="entry.term" @click="openEntry(entry)">
+            <span class="entry-term">{{ entry.term.split("\n")[0] }}</span>
+            <span class="entry-meta">{{ formatDate(entry.date) }}{{ entry.source ? ` · ${entry.source}` : "" }}</span>
+          </button>
+          <button class="forget" title="Borrar del historial" @click="forget(entry.id)">×</button>
+        </li>
+      </ul>
+      <p v-if="!foundEntries.length" class="notice">
+        {{ entries.length ? "Nada coincide con la búsqueda." : "Aún no hay nada en el historial." }}
+      </p>
+    </section>
 
     <section v-if="view === 'settings'" class="panel">
       <label>
@@ -512,6 +662,20 @@ onUnmounted(() => {
         «Guardar nota», bajo cada respuesta, crea ahí un .md con la conversación; por ejemplo, en una carpeta de tu
         vault de Obsidian. La carpeta tiene que existir.
       </p>
+
+      <label class="check"><input v-model="historyEnabled" type="checkbox" /> Guardar historial</label>
+      <p class="notice">
+        Cada conversación se guarda solo en este equipo, para buscarla y retomarla desde 🕘. Con la casilla quitada, lo
+        nuevo no se guarda.
+      </p>
+      <label>
+        No guardar si el título de la ventana contiene, como palabra:
+        <textarea v-model="historyExcluded" rows="6" />
+      </label>
+      <p class="notice">Una por línea: tu gestor de contraseñas, tu banco…</p>
+      <button class="danger" @click="clearHistory">
+        {{ confirmClear ? "¿Seguro? Pulsa otra vez para borrarlo todo" : "Borrar todo el historial" }}
+      </button>
     </section>
 
     <nav v-if="trail.length" v-show="view === 'chat'" class="trail">
@@ -677,9 +841,92 @@ header {
   font-weight: 600;
 }
 
-.panel input {
+.panel input,
+.panel textarea {
   flex: none;
   font-weight: normal;
+}
+
+.panel textarea {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-weight: normal;
+  resize: vertical;
+}
+
+.panel .check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.panel .search {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.entries {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.entries li {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+}
+
+.entry {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  padding: 6px 0;
+  border: none;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.entry-term,
+.entry-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entry-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.entry:hover .entry-term {
+  color: var(--accent);
+}
+
+.forget {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.danger {
+  padding: 6px 12px;
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  background: none;
+  color: var(--error);
+  font: inherit;
+  cursor: pointer;
 }
 
 .trail {

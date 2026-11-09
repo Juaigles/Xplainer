@@ -549,6 +549,33 @@ fn save_note(folder: String, title: String, content: String, existing: Option<St
     }
 }
 
+/// The history of explanations, kept only on this computer, in the app's data folder.
+fn history_file(app: &AppHandle) -> Result<PathBuf, String> {
+    let folder = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
+    Ok(folder.join("history.json"))
+}
+
+/// The history as JSON text; an empty list the first time.
+#[tauri::command]
+fn read_history(app: AppHandle) -> Result<String, String> {
+    match fs::read_to_string(history_file(&app)?) {
+        Ok(text) => Ok(text),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok("[]".into()),
+        Err(error) => Err(format!("No se pudo leer el historial: {error}")),
+    }
+}
+
+/// Replaces the whole history. Through a temporary file, so a crash never leaves it half written.
+#[tauri::command]
+fn write_history(app: AppHandle, history: String) -> Result<(), String> {
+    let file = history_file(&app)?;
+    let temporary = file.with_extension("json.tmp");
+    fs::write(&temporary, history)
+        .and_then(|()| fs::rename(&temporary, &file))
+        .map_err(|error| format!("No se pudo guardar el historial: {error}"))
+}
+
 /// A file name that Windows accepts and Obsidian can link to, from the note's title.
 fn note_name(title: &str) -> String {
     let cleaned: String = title
@@ -768,6 +795,8 @@ pub fn run() {
             preload_ollama,
             ollama_loaded,
             save_note,
+            read_history,
+            write_history,
             cancel_answer
         ])
         .on_window_event(|window, event| {
