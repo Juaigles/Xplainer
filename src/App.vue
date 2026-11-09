@@ -73,6 +73,17 @@ const STORAGE_KEY = "xplanator.model";
 
 const SUGGESTION_LINE = /^\s*>>?\s*/;
 
+/** Follow-ups under the last answer that change its level without typing. */
+const REPHRASINGS = [
+  { label: "Más simple", prompt: "Explícamelo de forma más simple, como si no supiera nada del tema." },
+  { label: "Más técnico", prompt: "Explícamelo de forma más técnica y precisa, con los términos correctos del área." },
+  {
+    label: "Otro significado",
+    prompt: "¿Qué otro significado puede tener lo que seleccioné? Explícame el más probable después del que ya me has dado.",
+    onlyShortTerms: true,
+  },
+];
+
 const term = ref("");
 const chat = ref<ChatEntry[]>([]);
 const input = ref("");
@@ -125,6 +136,14 @@ watch(selectedId, (id) => {
 async function refreshOllamaModels() {
   ollamaModels.value = await invoke<string[]>("ollama_models");
 }
+
+const rephrasings = computed(() => {
+  const last = chat.value[chat.value.length - 1];
+  if (streaming.value || last?.role !== "assistant" || !answerText(last.text)) return [];
+  // "Another meaning" only makes sense for a word or a short expression.
+  const shortTerm = !term.value.includes("\n") && term.value.split(/\s+/).length <= 4;
+  return REPHRASINGS.filter((option) => shortTerm || !option.onlyShortTerms);
+});
 
 const suggestions = computed(() => {
   const last = chat.value[chat.value.length - 1];
@@ -342,6 +361,12 @@ onUnmounted(() => {
 
       <p v-if="error" class="error">{{ error }}</p>
 
+      <div v-if="rephrasings.length" class="rephrasings">
+        <button v-for="option in rephrasings" :key="option.label" @click="ask(option.prompt, option.label)">
+          {{ option.label }}
+        </button>
+      </div>
+
       <div v-if="suggestions.length" class="suggestions">
         <button v-for="question in suggestions" :key="question" @click="ask(question, question)">
           {{ question }}
@@ -465,6 +490,29 @@ header {
 
 .error {
   color: var(--error);
+}
+
+.rephrasings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.rephrasings button {
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.rephrasings button:hover {
+  border-color: var(--accent);
+  color: var(--fg);
 }
 
 .suggestions {
