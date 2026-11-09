@@ -124,8 +124,8 @@ const input = ref("");
 const error = ref("");
 const streaming = ref(false);
 const loadingModel = ref(false);
-const ollamaModels = ref<string[]>([]);
-const selectedId = ref(stored(STORAGE_KEY, "claude"));
+// Empty on first run: refreshSetup() then picks a model that works on this computer.
+const selectedId = ref(stored(STORAGE_KEY, ""));
 const body = ref<HTMLElement>();
 const inputEl = ref<HTMLInputElement>();
 const trail = ref<Level[]>([]);
@@ -140,9 +140,23 @@ const entries = ref<HistoryEntry[]>([]);
 const historyQuery = ref("");
 const confirmClear = ref(false);
 
+/** What Rust found on this computer (`check_setup`); null until the first check. */
+interface Setup {
+  ollama_installed: boolean;
+  ollama_running: boolean;
+  ollama_models: string[];
+  clis: string[];
+  recommended_model: string;
+  recommended_size: string;
+}
+
+const setup = ref<Setup | null>(null);
+const pull = ref<{ completed: number; total: number } | null>(null);
+
 const models = computed<ModelOption[]>(() => [
-  ...SUBSCRIPTION_MODELS,
-  ...ollamaModels.value.map((name) => ({
+  // Claude and Codex only where they are installed; a friend without them would only get errors.
+  ...SUBSCRIPTION_MODELS.filter((option) => (setup.value?.clis ?? []).includes(option.provider)),
+  ...(setup.value?.ollama_models ?? []).map((name) => ({
     id: `ollama:${name}`,
     label: `${name} · ${name.includes("cloud") ? "nube de Ollama" : "local"}`,
     provider: "ollama" as const,
@@ -191,8 +205,90 @@ watch(notesFolder, (folder) => store(NOTES_FOLDER_KEY, folder));
 watch(historyEnabled, (enabled) => store(HISTORY_ENABLED_KEY, String(enabled)));
 watch(historyExcluded, (words) => store(HISTORY_EXCLUDED_KEY, words));
 
-async function refreshOllamaModels() {
-  ollamaModels.value = await invoke<string[]>("ollama_models");
+async function refreshSetup() {
+  let found: Setup;
+  try {
+    found = await invoke<Setup>("check_setup");
+  } catch {
+    return; // Keep what we knew.
+  }
+  setup.value = found;
+  // Choose a model that works here, free ones first: on first run, or when the chosen one is gone
+  // for good (CLI uninstalled, Ollama model deleted). Ollama merely closed keeps the choice, so it
+  // works again once Ollama starts instead of silently switching to a subscription.
+  const id = selectedId.value;
+  const unreachable = id.startsWith("ollama:") && !found.ollama_running;
+  if (!id || (!unreachable && !models.value.some((model) => model.id === id))) {
+    const first = models.value.find((model) => model.provider === "ollama") ?? models.value[0];
+    if (first) selectedId.value = first.id;
+  }
+}
+
+// No model to answer with: show the first-run assistant instead of errors.
+const needsSetup = computed(() => setup.value !== null && models.value.length === 0);
+const setupStep = computed(() => {
+  if (setup.value?.ollama_running) return "download";
+  return setup.value?.ollama_installed ? "start" : "install";
+});
+
+const gigabytes = (bytes: number) => (bytes / 1e9).toFixed(1).replace(".", ",");
+const pullPercent = computed(() =>
+  pull.value?.total ? Math.round((pull.value.completed / pull.value.total) * 100) : 0,
+);
+const pullText = computed(() =>
+  pull.value?.total
+    ? `${gigabytes(pull.value.completed)} de ${gigabytes(pull.value.total)} GB`
+    : "Preparando la descarga…",
+);
+
+let setupPoll: ReturnType<typeof setInterval> | undefined;
+
+/** After the user goes to install or open Ollama, notice it by ourselves (for 10 minutes). */
+function watchForOllama() {
+  clearInterval(setupPoll);
+  const until = Date.now() + 10 * 60_000;
+  setupPoll = setInterval(() => {
+    if (!needsSetup.value || Date.now() > until) clearInterval(setupPoll);
+    else if (!pull.value) void refreshSetup();
+  }, 3000);
+}
+
+async function openOllamaDownload() {
+  try {
+    await invoke("open_ollama_download");
+    watchForOllama();
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+async function openOllama() {
+  try {
+    await invoke("start_ollama");
+  } catch (e) {
+    error.value = String(e); // They may still open it from the Start menu: keep watching.
+  }
+  watchForOllama();
+}
+
+async function downloadModel() {
+  if (!setup.value || pull.value) return;
+  const model = setup.value.recommended_model;
+  const onProgress = new Channel<{ completed?: number | null; total?: number | null }>();
+  onProgress.onmessage = ({ completed, total }) => {
+    if (total) pull.value = { completed: completed ?? 0, total };
+  };
+  pull.value = { completed: 0, total: 0 };
+  error.value = "";
+  try {
+    await invoke("pull_ollama_model", { model, onProgress });
+    selectedId.value = `ollama:${model}`;
+    await refreshSetup();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    pull.value = null;
+  }
 }
 
 /** Ollama's cloud models run on its servers: nothing to load on this computer. */
@@ -232,6 +328,10 @@ function answerText(text: string): string {
     .filter((line) => !SUGGESTION_LINE.test(line))
     .join("\n")
     .trim();
+}
+
+function windowHint(windowTitle: string): string {
+  return windowTitle ? `Ventana donde lo seleccioné: ${windowTitle}` : "";
 }
 
 /** `hint` helps the model pick the right meaning: where the text was selected. */
@@ -299,8 +399,8 @@ let generation = 0;
 
 async function chosenModel(): Promise<ModelOption | undefined> {
   const find = () => models.value.find((model) => model.id === selectedId.value);
-  // Ollama may have started after the app: look again before giving up.
-  if (!find() && selectedId.value.startsWith("ollama:")) await refreshOllamaModels();
+  // Ollama may have started (or a model been added) after the last check: look again first.
+  if (!find()) await refreshSetup();
   return find();
 }
 
@@ -313,7 +413,7 @@ async function ask(content: string, shown?: string) {
     option !== undefined && isLocalOllama(option) && !(await invoke<boolean>("ollama_loaded", { model: option.model }));
   if (started !== generation || streaming.value) return;
   if (!option) {
-    error.value = UNAVAILABLE;
+    if (!needsSetup.value) error.value = UNAVAILABLE; // Otherwise the assistant explains what to do.
     return;
   }
   const conversation = history;
@@ -371,9 +471,10 @@ function start(selection: Selection) {
   conversationId = Date.now();
   source = selection.window_title;
   term.value = selection.text.trim();
-  if (term.value) {
-    const hint = selection.window_title ? `Ventana donde lo seleccioné: ${selection.window_title}` : "";
-    void ask(firstPrompt(term.value, hint));
+  if (needsSetup.value) {
+    void refreshSetup(); // Ollama may have been installed or opened since the last check.
+  } else if (term.value) {
+    void ask(firstPrompt(term.value, windowHint(source)));
   } else {
     void nextTick(() => inputEl.value?.focus());
   }
@@ -568,6 +669,13 @@ function onBodyMouseup() {
   };
 }
 
+// Setup just finished: explain what was selected meanwhile.
+watch(needsSetup, (now, before) => {
+  if (before && !now && term.value && chat.value.length === 0) {
+    void ask(firstPrompt(term.value, windowHint(source)));
+  }
+});
+
 async function submit() {
   const text = input.value.trim();
   if (!text) return;
@@ -616,12 +724,13 @@ onMounted(async () => {
     start({ text: "", window_title: "" });
     error.value = event.payload;
   });
-  void refreshOllamaModels();
+  void refreshSetup();
   void loadHistory();
 });
 
 // In dev, hot reload remounts the component; without this, old copies keep listening and answering.
 onUnmounted(() => {
+  clearInterval(setupPoll);
   cancelCurrent();
   window.removeEventListener("keydown", onKeydown);
   unlistenExplain?.();
@@ -634,7 +743,7 @@ onUnmounted(() => {
   <main class="popup">
     <header data-tauri-drag-region>
       <span class="term" data-tauri-drag-region :title="term">{{ term || "Xplanator" }}</span>
-      <select v-model="selectedId" class="model" title="Modelo que explica" @focus="refreshOllamaModels">
+      <select v-model="selectedId" class="model" title="Modelo que explica" @focus="refreshSetup">
         <option v-for="option in models" :key="option.id" :value="option.id">{{ option.label }}</option>
       </select>
       <button class="icon" :class="{ active: view === 'history' }" title="Historial" @click="toggleView('history')">
@@ -707,7 +816,32 @@ onUnmounted(() => {
         Explicar «{{ picked.text }}»
       </button>
 
-      <p v-if="!term" class="notice">
+      <div v-if="needsSetup && setup" class="setup">
+        <p v-if="setupStep !== 'start'">
+          Para explicar, Xplanator necesita un modelo de IA. Puede usar uno gratuito que funciona en tu
+          ordenador, con Ollama.
+        </p>
+        <template v-if="setupStep === 'install'">
+          <p>1. Instala Ollama (gratis). Cuando termine, vuelve aquí: se detecta solo.</p>
+          <button @click="openOllamaDownload">Descargar Ollama</button>
+        </template>
+        <template v-else-if="setupStep === 'start'">
+          <p>Ollama está cerrado. Ábrelo para poder usar sus modelos.</p>
+          <button @click="openOllama">Abrir Ollama</button>
+        </template>
+        <template v-else>
+          <p>
+            2. Descarga el modelo recomendado para tu equipo: {{ setup.recommended_model }}
+            ({{ setup.recommended_size }}).
+          </p>
+          <button v-if="!pull" @click="downloadModel">Descargar modelo</button>
+          <template v-else>
+            <div class="progress"><div class="bar" :style="{ width: `${pullPercent}%` }"></div></div>
+            <p class="notice">{{ pullText }}</p>
+          </template>
+        </template>
+      </div>
+      <p v-else-if="!term" class="notice">
         Selecciona un texto en cualquier app y pulsa Alt+X, o escribe abajo qué quieres que te explique. Si el texto no
         se puede seleccionar (en una imagen, un vídeo…), pulsa Win+Shift+Z y recórtalo.
       </p>
@@ -742,9 +876,10 @@ onUnmounted(() => {
       <input
         ref="inputEl"
         v-model="input"
+        :disabled="needsSetup"
         :placeholder="term ? 'Pregunta lo que no entiendas…' : '¿Qué quieres que te explique?'"
       />
-      <button :disabled="!input.trim() || streaming">Enviar</button>
+      <button :disabled="!input.trim() || streaming || needsSetup">Enviar</button>
     </form>
   </main>
 </template>
@@ -1043,6 +1178,40 @@ header {
 .rephrasings .save {
   margin-left: auto;
   color: var(--accent);
+}
+
+.setup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.setup p {
+  margin: 0;
+}
+
+.setup button {
+  align-self: flex-start;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.progress {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--accent-bg);
+  overflow: hidden;
+}
+
+.bar {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s;
 }
 
 .suggestions {

@@ -8,7 +8,7 @@ Hecho con Tauri v2 (Rust) + Vue 3 + TypeScript.
 
 ## Modelos
 
-Se eligen en el desplegable de la cabecera del recuadro, que recuerda la última elección. Ninguno cobra por uso:
+Se eligen en el desplegable de la cabecera del recuadro, que recuerda la última elección y solo muestra los que funcionan en ese equipo. Ninguno cobra por uso:
 
 - **Claude Haiku · suscripción**: tu plan de Claude a través de Claude Code (`claude -p`). Gasta de tus límites de uso. Necesita Claude Code instalado con el instalador nativo (`claude.exe` en el PATH; la instalación por npm no sirve) y con la sesión iniciada.
 - **Codex GPT-5.6 Luna · suscripción**: tu plan de ChatGPT a través de Codex (`codex exec`). Gasta de tus límites de Codex. La respuesta aparece entera al final, no poco a poco. Necesita Codex con la sesión de ChatGPT iniciada.
@@ -45,6 +45,15 @@ Bajo cada respuesta, **Más simple** y **Más técnico** cambian el nivel de la 
 **🕘 Historial** guarda cada conversación para buscarla (sin distinguir mayúsculas ni acentos) y retomarla. Se guarda solo en tu equipo, en `%APPDATA%\com.kiook.xplanator\history.json`, con las 500 más recientes. Como el texto puede venir de cualquier app, en **⚙ Ajustes** puedes pausarlo, borrarlo entero y editar la lista de palabras que, si aparecen en el título de la ventana de origen, impiden guardar (de serie: gestores de contraseñas, bancos y navegación privada). Cada entrada se borra con su ×.
 
 Para explicar una palabra de la respuesta, selecciónala y pulsa el botón **Explicar «…»** que aparece al lado, o Alt+X. Se abre como un nivel más, con un rastro bajo la cabecera (TCP › handshake › SYN) para volver a cualquier nivel anterior.
+
+## Compartirla con otra persona
+
+Basta con pasarle el instalador. Si en su equipo no hay ningún modelo (ni Ollama con modelos, ni Claude Code o Codex), el recuadro muestra un asistente de primera vez:
+
+1. **Instalar Ollama** (gratis): el botón abre su página oficial de descarga; al terminar, la app lo detecta sola. Si ya lo tiene pero está cerrado, un botón lo abre.
+2. **Descargar el modelo recomendado**, con barra de progreso: `qwen3:4b-instruct` (2,5 GB) con 10 GB de RAM o más, o `qwen3:1.7b` (1,4 GB) con menos.
+
+Si seleccionó un texto antes de configurarla, se explica solo al terminar. No necesita cuentas ni terminal. Claude y Codex solo aparecen si los tiene instalados con su propia cuenta: las suscripciones son personales.
 
 ## Desarrollar
 

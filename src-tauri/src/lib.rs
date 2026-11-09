@@ -27,7 +27,10 @@ use windows::{
     Media::Ocr::OcrEngine,
     Storage::Streams::DataWriter,
     Win32::{
-        System::DataExchange::GetClipboardSequenceNumber,
+        System::{
+            DataExchange::GetClipboardSequenceNumber,
+            SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX},
+        },
         UI::{
             Input::KeyboardAndMouse::{
                 GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
@@ -499,30 +502,157 @@ fn is_loaded(model: &str) -> bool {
     })
 }
 
-/// Models in Ollama that can chat; empty if Ollama is not running.
+/// Models in Ollama that can chat; `None` if Ollama is not running.
+fn fetch_ollama_models() -> Option<Vec<String>> {
+    let tags: Value = ollama(Some(Duration::from_secs(3)))
+        .get(format!("{OLLAMA_URL}/api/tags"))
+        .call()
+        .ok()?
+        .body_mut()
+        .read_json()
+        .ok()?;
+    let models = tags["models"].as_array()?;
+    // Embedding-only models cannot answer. Older Ollama versions list no capabilities.
+    let can_chat = |model: &&Value| {
+        model["capabilities"]
+            .as_array()
+            .is_none_or(|capabilities| capabilities.iter().any(|capability| capability == "completion"))
+    };
+    Some(models.iter().filter(can_chat).filter_map(|model| model["name"].as_str().map(String::from)).collect())
+}
+
+const OLLAMA_DOWNLOAD_URL: &str = "https://ollama.com/download/windows";
+
+/// What the first-run assistant needs to know about this computer.
+#[derive(Serialize)]
+struct Setup {
+    ollama_installed: bool,
+    ollama_running: bool,
+    ollama_models: Vec<String>,
+    /// Subscription CLIs found on the PATH: "claude", "codex".
+    clis: Vec<String>,
+    /// A free local model that fits this computer, and its download size.
+    recommended_model: String,
+    recommended_size: String,
+}
+
+/// Ollama's tray app, which starts its server: in the installer's default folder, or next to
+/// the `ollama.exe` on the PATH when it was installed elsewhere (installer `/DIR=...`).
+fn ollama_app_path() -> Option<PathBuf> {
+    let default = PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
+        .join("Programs")
+        .join("Ollama")
+        .join("ollama app.exe");
+    if default.exists() {
+        return Some(default);
+    }
+    let output = Command::new("where")
+        .arg("ollama.exe")
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    let ollama = PathBuf::from(String::from_utf8_lossy(&output.stdout).lines().next()?.trim());
+    let app = ollama.parent()?.join("ollama app.exe");
+    app.exists().then_some(app)
+}
+
+fn on_path(program: &str) -> bool {
+    Command::new("where")
+        .arg(program)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn total_memory_gb() -> u64 {
+    let mut memory = MEMORYSTATUSEX { dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
+    match unsafe { GlobalMemoryStatusEx(&mut memory) } {
+        Ok(()) => memory.ullTotalPhys / (1024 * 1024 * 1024),
+        Err(_) => 0,
+    }
+}
+
+/// Small instruct models: they answer without "thinking" first, so they are quick even on a
+/// laptop CPU, and they handle Spanish well.
+fn recommended_model() -> (&'static str, &'static str) {
+    if total_memory_gb() >= 10 {
+        ("qwen3:4b-instruct", "2,5 GB")
+    } else {
+        ("qwen3:1.7b", "1,4 GB")
+    }
+}
+
 #[tauri::command]
-async fn ollama_models() -> Vec<String> {
-    tauri::async_runtime::spawn_blocking(|| -> Option<Vec<String>> {
-        let tags: Value = ollama(Some(Duration::from_secs(3)))
-            .get(format!("{OLLAMA_URL}/api/tags"))
-            .call()
-            .ok()?
-            .body_mut()
-            .read_json()
-            .ok()?;
-        let models = tags["models"].as_array()?;
-        // Embedding-only models cannot answer. Older Ollama versions list no capabilities.
-        let can_chat = |model: &&Value| {
-            model["capabilities"]
-                .as_array()
-                .is_none_or(|capabilities| capabilities.iter().any(|capability| capability == "completion"))
-        };
-        Some(models.iter().filter(can_chat).filter_map(|model| model["name"].as_str().map(String::from)).collect())
+async fn check_setup() -> Result<Setup, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let models = fetch_ollama_models();
+        let (model, size) = recommended_model();
+        Setup {
+            // Installed means something `start_ollama` can open.
+            ollama_installed: models.is_some() || ollama_app_path().is_some(),
+            ollama_running: models.is_some(),
+            ollama_models: models.unwrap_or_default(),
+            // Exactly what `ask_*` can launch: `claude` must be the native `claude.exe` (an npm
+            // `claude.cmd` would be found by `where claude` but cannot be started directly);
+            // `codex` goes through `cmd`, which also finds a `codex.cmd`.
+            clis: [("claude", "claude.exe"), ("codex", "codex")]
+                .into_iter()
+                .filter(|(_, program)| on_path(program))
+                .map(|(cli, _)| cli.to_string())
+                .collect(),
+            recommended_model: model.into(),
+            recommended_size: size.into(),
+        }
     })
     .await
-    .ok()
-    .flatten()
-    .unwrap_or_default()
+    .map_err(|error| error.to_string())
+}
+
+/// Opens Ollama's official download page; the user installs it from there.
+#[tauri::command]
+fn open_ollama_download() -> Result<(), String> {
+    // explorer.exe opens a URL in the default browser, with no shell to interpret it.
+    Command::new("explorer").arg(OLLAMA_DOWNLOAD_URL).spawn().map(|_| ()).map_err(|error| error.to_string())
+}
+
+/// Starts Ollama when it is installed but closed (it normally starts with Windows).
+#[tauri::command]
+fn start_ollama() -> Result<(), String> {
+    let app = ollama_app_path().ok_or("No encuentro la app de Ollama. Ábrela desde el menú Inicio.")?;
+    Command::new(app).spawn().map(|_| ()).map_err(|error| format!("No se pudo abrir Ollama: {error}"))
+}
+
+/// Downloads a model into Ollama, reporting progress (bytes done and total) as it goes.
+#[tauri::command]
+async fn pull_ollama_model(model: String, on_progress: Channel<Value>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut response = ollama(None)
+            .post(format!("{OLLAMA_URL}/api/pull"))
+            .send_json(json!({ "model": model, "stream": true }))
+            .map_err(|error| format!("No se pudo conectar con Ollama. ¿Está en marcha? ({error})"))?;
+        if let Some(error) = response_error(&mut response) {
+            return Err(format!("Ollama: {error}"));
+        }
+        for line in BufReader::new(response.into_body().into_reader()).lines() {
+            let line = line.map_err(|error| format!("La descarga se cortó: {error}"))?;
+            let Ok(event) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if let Some(error) = event["error"].as_str() {
+                return Err(format!("Ollama: {error}"));
+            }
+            if event["status"] == "success" {
+                return Ok(());
+            }
+            let _ = on_progress.send(json!({ "completed": event["completed"], "total": event["total"] }));
+        }
+        Err("La descarga terminó sin confirmar el modelo.".into())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// Saves an explanation as a Markdown note in the user's notes folder (an Obsidian vault, say).
@@ -885,7 +1015,10 @@ pub fn run() {
             ask_claude_code,
             ask_codex,
             ask_ollama,
-            ollama_models,
+            check_setup,
+            open_ollama_download,
+            start_ollama,
+            pull_ollama_model,
             preload_ollama,
             ollama_loaded,
             save_note,
