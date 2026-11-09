@@ -56,11 +56,18 @@ interface Message {
   content: string;
 }
 
+/** The note saved from a conversation, and how long the conversation was then. */
+interface SavedNote {
+  path: string;
+  entries: number;
+}
+
 /** An explanation left open while a deeper one is shown: "TCP › handshake › SYN". */
 interface Level {
   term: string;
   chat: ChatEntry[];
   history: Message[];
+  note: SavedNote | null;
 }
 
 /** A model in the selector: Claude and Codex use your subscriptions; Ollama models are free. */
@@ -77,6 +84,7 @@ const SUBSCRIPTION_MODELS: ModelOption[] = [
   { id: "codex", label: "Codex GPT-5.6 Luna · suscripción", provider: "codex", model: "gpt-5.6-luna" },
 ];
 const STORAGE_KEY = "xplanator.model";
+const NOTES_FOLDER_KEY = "xplanator.notesFolder";
 
 const SUGGESTION_LINE = /^\s*>>?\s*/;
 
@@ -98,12 +106,15 @@ const error = ref("");
 const streaming = ref(false);
 const loadingModel = ref(false);
 const ollamaModels = ref<string[]>([]);
-const selectedId = ref(readStoredModel());
+const selectedId = ref(stored(STORAGE_KEY, "claude"));
 const body = ref<HTMLElement>();
 const inputEl = ref<HTMLInputElement>();
 const trail = ref<Level[]>([]);
 /** Text selected inside an answer, offered as a deeper explanation next to the selection. */
 const picked = ref<{ text: string; top: number; left: number } | null>(null);
+const view = ref<"chat" | "settings">("chat");
+const notesFolder = ref(stored(NOTES_FOLDER_KEY, ""));
+const note = ref<SavedNote | null>(null);
 
 const models = computed<ModelOption[]>(() => [
   ...SUBSCRIPTION_MODELS,
@@ -124,25 +135,31 @@ interface Request {
 
 // Full conversation, sent on every follow-up.
 let history: Message[] = [];
+// Title of the window the first text was selected in; deeper levels keep it.
+let source = "";
 let current: Request | null = null;
 // Ids must only grow, even across hot reloads: Rust treats cancelling an id as cancelling every older one.
 let nextRequestId = Date.now();
 
-function readStoredModel(): string {
+/** Settings live in localStorage only as a convenience: without it, each one has its default. */
+function stored(key: string, fallback: string): string {
   try {
-    return localStorage.getItem(STORAGE_KEY) ?? "claude";
+    return localStorage.getItem(key) ?? fallback;
   } catch {
-    return "claude";
+    return fallback;
   }
 }
 
-watch(selectedId, (id) => {
+function store(key: string, value: string) {
   try {
-    localStorage.setItem(STORAGE_KEY, id);
+    localStorage.setItem(key, value);
   } catch {
-    // Only a convenience: without storage the app starts with Claude.
+    // See stored().
   }
-});
+}
+
+watch(selectedId, (id) => store(STORAGE_KEY, id));
+watch(notesFolder, (folder) => store(NOTES_FOLDER_KEY, folder));
 
 async function refreshOllamaModels() {
   ollamaModels.value = await invoke<string[]>("ollama_models");
@@ -302,7 +319,7 @@ async function ask(content: string, shown?: string) {
   }
 }
 
-/** Stops whatever is being answered: another explanation takes its place. */
+/** Stops whatever is being answered and shows the conversation: another one takes its place. */
 function interrupt() {
   generation++;
   cancelCurrent();
@@ -311,6 +328,7 @@ function interrupt() {
   error.value = "";
   input.value = "";
   picked.value = null;
+  view.value = "chat";
 }
 
 function start(selection: Selection) {
@@ -318,6 +336,8 @@ function start(selection: Selection) {
   trail.value = [];
   history = [];
   chat.value = [];
+  note.value = null;
+  source = selection.window_title;
   term.value = selection.text.trim();
   if (term.value) {
     const hint = selection.window_title ? `Ventana donde lo seleccioné: ${selection.window_title}` : "";
@@ -335,9 +355,10 @@ function explainDeeper(text: string) {
   if (!term.value) return start({ text: selected, window_title: "" });
   const parent = term.value;
   interrupt();
-  trail.value.push({ term: parent, chat: chat.value, history });
+  trail.value.push({ term: parent, chat: chat.value, history, note: note.value });
   history = [];
   chat.value = [];
+  note.value = null;
   term.value = selected;
   void ask(firstPrompt(selected, `Aparece en una explicación sobre: ${parent}`));
 }
@@ -350,6 +371,55 @@ function goBack(index: number) {
   term.value = level.term;
   chat.value = level.chat;
   history = level.history;
+  note.value = level.note;
+}
+
+/** The conversation as Markdown, with properties that Obsidian shows and can search. */
+function noteMarkdown(): string {
+  const properties = [`fecha: ${new Date().toLocaleString("sv-SE").slice(0, 16)}`];
+  if (source) properties.push(`origen: ${JSON.stringify(source)}`);
+  if (trail.value.length) {
+    properties.push(`contexto: ${JSON.stringify(trail.value.map((level) => level.term).join(" › "))}`);
+  }
+  properties.push("tags: [xplanator]");
+  const parts = [`---\n${properties.join("\n")}\n---`];
+  // The file name holds only the first line: code, errors and long text go whole into the note.
+  if (term.value.includes("\n")) parts.push("```\n" + term.value + "\n```");
+  else if (term.value.length > 60) parts.push(`> ${term.value}`);
+  for (const entry of chat.value) {
+    parts.push(entry.role === "user" ? `## ${entry.text}` : answerText(entry.text));
+  }
+  return `${parts.join("\n\n")}\n`;
+}
+
+async function saveNote() {
+  if (!notesFolder.value) {
+    view.value = "settings";
+    return;
+  }
+  const started = generation;
+  error.value = "";
+  try {
+    const path = await invoke<string>("save_note", {
+      folder: notesFolder.value,
+      title: term.value.split("\n")[0],
+      content: noteMarkdown(),
+      existing: note.value?.path ?? null,
+    });
+    // Another conversation may be on screen now; this note belongs to the one that was.
+    if (started === generation) note.value = { path, entries: chat.value.length };
+  } catch (e) {
+    if (started === generation) error.value = String(e);
+  }
+}
+
+const noteLabel = computed(() => {
+  if (!note.value) return "Guardar nota";
+  return note.value.entries === chat.value.length ? "Nota guardada ✓" : "Actualizar nota";
+});
+
+function toggleSettings() {
+  view.value = view.value === "settings" ? "chat" : "settings";
 }
 
 function onBodyMouseup() {
@@ -379,6 +449,7 @@ async function submit() {
   input.value = "";
   if (history.length === 0) {
     term.value = text;
+    source = "";
     void ask(firstPrompt(text, ""));
   } else {
     void ask(text, text);
@@ -428,10 +499,22 @@ onUnmounted(() => {
       <select v-model="selectedId" class="model" title="Modelo que explica" @focus="refreshOllamaModels">
         <option v-for="option in models" :key="option.id" :value="option.id">{{ option.label }}</option>
       </select>
+      <button class="icon" :class="{ active: view === 'settings' }" title="Ajustes" @click="toggleSettings">⚙</button>
       <button class="close" title="Cerrar (Esc)" @click="close">×</button>
     </header>
 
-    <nav v-if="trail.length" class="trail">
+    <section v-if="view === 'settings'" class="panel">
+      <label>
+        Carpeta de notas
+        <input v-model.trim="notesFolder" placeholder="C:\Users\…\MiVault\Xplanator" />
+      </label>
+      <p class="notice">
+        «Guardar nota», bajo cada respuesta, crea ahí un .md con la conversación; por ejemplo, en una carpeta de tu
+        vault de Obsidian. La carpeta tiene que existir.
+      </p>
+    </section>
+
+    <nav v-if="trail.length" v-show="view === 'chat'" class="trail">
       <template v-for="(level, index) in trail" :key="index">
         <button :title="level.term" @click="goBack(index)">{{ level.term }}</button>
         <span>›</span>
@@ -439,7 +522,7 @@ onUnmounted(() => {
       <span class="current" :title="term">{{ term }}</span>
     </nav>
 
-    <section ref="body" class="body" @mouseup="onBodyMouseup">
+    <section v-show="view === 'chat'" ref="body" class="body" @mouseup="onBodyMouseup">
       <button
         v-if="picked"
         class="deeper"
@@ -468,6 +551,9 @@ onUnmounted(() => {
         <button v-for="option in rephrasings" :key="option.label" @click="ask(option.prompt, option.label)">
           {{ option.label }}
         </button>
+        <button class="save" :title="note?.path ?? 'Guardar la conversación como nota .md'" @click="saveNote">
+          {{ noteLabel }}
+        </button>
       </div>
 
       <div v-if="suggestions.length" class="suggestions">
@@ -477,7 +563,7 @@ onUnmounted(() => {
       </div>
     </section>
 
-    <form @submit.prevent="submit">
+    <form v-show="view === 'chat'" @submit.prevent="submit">
       <input
         ref="inputEl"
         v-model="input"
@@ -561,12 +647,39 @@ header {
   font-size: 12px;
 }
 
-.close {
+.close,
+.icon {
   border: none;
   background: none;
   color: var(--muted);
   font-size: 18px;
   cursor: pointer;
+}
+
+.icon {
+  font-size: 15px;
+}
+
+.icon.active {
+  color: var(--accent);
+}
+
+.panel {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px;
+}
+
+.panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-weight: 600;
+}
+
+.panel input {
+  flex: none;
+  font-weight: normal;
 }
 
 .trail {
@@ -667,6 +780,11 @@ header {
 .rephrasings button:hover {
   border-color: var(--accent);
   color: var(--fg);
+}
+
+.rephrasings .save {
+  margin-left: auto;
+  color: var(--accent);
 }
 
 .suggestions {

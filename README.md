@@ -38,6 +38,8 @@ En el recuadro: **Esc** lo oculta y la cabecera sirve para arrastrarlo.
 
 Bajo cada respuesta, **Más simple** y **Más técnico** cambian el nivel de la explicación, y **Otro significado** (solo con palabras o expresiones cortas) pide la siguiente acepción.
 
+**Guardar nota** crea un `.md` con la conversación en tu carpeta de notas, por ejemplo una carpeta de tu vault de Obsidian. La carpeta se elige en **⚙ Ajustes** y tiene que existir. Nunca sobrescribe otra nota: si guardas otra vez tras repreguntar, actualiza la misma.
+
 Para explicar una palabra de la respuesta, selecciónala y pulsa el botón **Explicar «…»** que aparece al lado, o Alt+X. Se abre como un nivel más, con un rastro bajo la cabecera (TCP › handshake › SYN) para volver a cualquier nivel anterior.
 
 ## Desarrollar

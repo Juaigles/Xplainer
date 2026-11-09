@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    io::{BufRead, BufReader, Read, Write},
+    fs::{self, OpenOptions},
+    io::{BufRead, BufReader, ErrorKind, Read, Write},
     os::windows::process::CommandExt,
+    path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -514,6 +516,62 @@ async fn ollama_models() -> Vec<String> {
     .unwrap_or_default()
 }
 
+/// Saves an explanation as a Markdown note in the user's notes folder (an Obsidian vault, say).
+/// With `existing`, a note saved before from the same conversation, it rewrites that note;
+/// otherwise it creates a new one and never overwrites another.
+#[tauri::command]
+fn save_note(folder: String, title: String, content: String, existing: Option<String>) -> Result<String, String> {
+    let folder = PathBuf::from(folder.trim());
+    if !folder.is_dir() {
+        return Err(format!("No encuentro la carpeta de notas «{}». Revísala en Ajustes.", folder.display()));
+    }
+    let failed = |error: std::io::Error| format!("No se pudo guardar la nota: {error}");
+    let previous = existing
+        .map(PathBuf::from)
+        .filter(|path| path.parent() == Some(folder.as_path()) && path.is_file());
+    if let Some(path) = previous {
+        fs::write(&path, content).map_err(failed)?;
+        return Ok(path.display().to_string());
+    }
+    let name = note_name(&title);
+    let mut copy = 1;
+    loop {
+        let file = if copy == 1 { format!("{name}.md") } else { format!("{name} {copy}.md") };
+        let path = folder.join(file);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut note) => {
+                note.write_all(content.as_bytes()).map_err(failed)?;
+                return Ok(path.display().to_string());
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => copy += 1,
+            Err(error) => return Err(failed(error)),
+        }
+    }
+}
+
+/// A file name that Windows accepts and Obsidian can link to, from the note's title.
+fn note_name(title: &str) -> String {
+    let cleaned: String = title
+        .chars()
+        .map(|c| if c.is_control() || r#"<>:"/\|?*#^[]"#.contains(c) { ' ' } else { c })
+        .collect();
+    let words = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    let name = words.chars().take(60).collect::<String>().trim_end_matches(['.', ' ']).to_string();
+    // Device names such as CON or NUL cannot be file names on Windows, whatever the extension.
+    let upper = name.to_uppercase();
+    let device = matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (upper.len() == 4
+            && (upper.starts_with("COM") || upper.starts_with("LPT"))
+            && upper.ends_with(|c: char| c.is_ascii_digit()));
+    if name.is_empty() {
+        "Nota".into()
+    } else if device {
+        format!("{name} (nota)")
+    } else {
+        name
+    }
+}
+
 fn foreground_window_title() -> String {
     let mut buffer = [0u16; 512];
     let len = unsafe { GetWindowTextW(GetForegroundWindow(), &mut buffer) };
@@ -709,6 +767,7 @@ pub fn run() {
             ollama_models,
             preload_ollama,
             ollama_loaded,
+            save_note,
             cancel_answer
         ])
         .on_window_event(|window, event| {
