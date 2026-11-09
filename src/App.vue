@@ -56,6 +56,13 @@ interface Message {
   content: string;
 }
 
+/** An explanation left open while a deeper one is shown: "TCP › handshake › SYN". */
+interface Level {
+  term: string;
+  chat: ChatEntry[];
+  history: Message[];
+}
+
 /** A model in the selector: Claude and Codex use your subscriptions; Ollama models are free. */
 interface ModelOption {
   id: string;
@@ -94,6 +101,9 @@ const ollamaModels = ref<string[]>([]);
 const selectedId = ref(readStoredModel());
 const body = ref<HTMLElement>();
 const inputEl = ref<HTMLInputElement>();
+const trail = ref<Level[]>([]);
+/** Text selected inside an answer, offered as a deeper explanation next to the selection. */
+const picked = ref<{ text: string; top: number; left: number } | null>(null);
 
 const models = computed<ModelOption[]>(() => [
   ...SUBSCRIPTION_MODELS,
@@ -177,9 +187,9 @@ function answerText(text: string): string {
     .trim();
 }
 
-function firstPrompt(text: string, windowTitle: string): string {
-  const context = windowTitle ? `\nVentana donde lo seleccioné: ${windowTitle}` : "";
-  return `Explícame esto:\n<seleccion>\n${text}\n</seleccion>${context}`;
+/** `hint` helps the model pick the right meaning: where the text was selected. */
+function firstPrompt(text: string, hint: string): string {
+  return `Explícame esto:\n<seleccion>\n${text}\n</seleccion>${hint ? `\n${hint}` : ""}`;
 }
 
 /** The CLIs keep no session here, so each call carries the conversation so far as text. */
@@ -292,21 +302,71 @@ async function ask(content: string, shown?: string) {
   }
 }
 
-function start(selection: Selection) {
+/** Stops whatever is being answered: another explanation takes its place. */
+function interrupt() {
   generation++;
   cancelCurrent();
   current = null;
   streaming.value = false;
-  history = [];
-  chat.value = [];
   error.value = "";
   input.value = "";
+  picked.value = null;
+}
+
+function start(selection: Selection) {
+  interrupt();
+  trail.value = [];
+  history = [];
+  chat.value = [];
   term.value = selection.text.trim();
   if (term.value) {
-    void ask(firstPrompt(term.value, selection.window_title));
+    const hint = selection.window_title ? `Ventana donde lo seleccioné: ${selection.window_title}` : "";
+    void ask(firstPrompt(term.value, hint));
   } else {
     void nextTick(() => inputEl.value?.focus());
   }
+}
+
+/** Explains a word from the current explanation one level deeper, keeping the way back. */
+function explainDeeper(text: string) {
+  const selected = text.trim();
+  // While answering, the level to keep would hold a half answer.
+  if (!selected || streaming.value) return;
+  if (!term.value) return start({ text: selected, window_title: "" });
+  const parent = term.value;
+  interrupt();
+  trail.value.push({ term: parent, chat: chat.value, history });
+  history = [];
+  chat.value = [];
+  term.value = selected;
+  void ask(firstPrompt(selected, `Aparece en una explicación sobre: ${parent}`));
+}
+
+/** Goes back to an earlier level of the trail; the deeper ones are dropped. */
+function goBack(index: number) {
+  const level = trail.value[index];
+  interrupt();
+  trail.value = trail.value.slice(0, index);
+  term.value = level.term;
+  chat.value = level.chat;
+  history = level.history;
+}
+
+function onBodyMouseup() {
+  const selection = window.getSelection();
+  const text = selection?.toString().trim() ?? "";
+  const inAnswer = selection?.anchorNode?.parentElement?.closest(".answer");
+  if (!selection || !body.value || !text || text.length > 80 || !inAnswer || streaming.value) {
+    picked.value = null;
+    return;
+  }
+  const rect = selection.getRangeAt(0).getBoundingClientRect();
+  const area = body.value.getBoundingClientRect();
+  picked.value = {
+    text,
+    top: rect.bottom - area.top + body.value.scrollTop + 4,
+    left: Math.max(0, rect.left - area.left),
+  };
 }
 
 async function submit() {
@@ -341,11 +401,14 @@ function onKeydown(event: KeyboardEvent) {
 }
 
 let unlistenExplain: UnlistenFn | undefined;
+let unlistenDeeper: UnlistenFn | undefined;
 
 onMounted(async () => {
   window.addEventListener("keydown", onKeydown);
   // Listen first: a shortcut pressed while Ollama is slow to answer must not be lost.
   unlistenExplain = await listen<Selection>("explain", (event) => start(event.payload));
+  // The shortcut pressed inside this popup, on a word of an answer.
+  unlistenDeeper = await listen<Selection>("explain-deeper", (event) => explainDeeper(event.payload.text));
   void refreshOllamaModels();
 });
 
@@ -354,6 +417,7 @@ onUnmounted(() => {
   cancelCurrent();
   window.removeEventListener("keydown", onKeydown);
   unlistenExplain?.();
+  unlistenDeeper?.();
 });
 </script>
 
@@ -367,7 +431,25 @@ onUnmounted(() => {
       <button class="close" title="Cerrar (Esc)" @click="close">×</button>
     </header>
 
-    <section ref="body" class="body">
+    <nav v-if="trail.length" class="trail">
+      <template v-for="(level, index) in trail" :key="index">
+        <button :title="level.term" @click="goBack(index)">{{ level.term }}</button>
+        <span>›</span>
+      </template>
+      <span class="current" :title="term">{{ term }}</span>
+    </nav>
+
+    <section ref="body" class="body" @mouseup="onBodyMouseup">
+      <button
+        v-if="picked"
+        class="deeper"
+        :style="{ top: `${picked.top}px`, left: `min(${picked.left}px, calc(100% - 220px))` }"
+        @mousedown.prevent
+        @click="explainDeeper(picked.text)"
+      >
+        Explicar «{{ picked.text }}»
+      </button>
+
       <p v-if="!term" class="notice">
         Selecciona un texto en cualquier app y pulsa Alt+X, o escribe abajo qué quieres que te explique.
       </p>
@@ -487,10 +569,61 @@ header {
   cursor: pointer;
 }
 
+.trail {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.trail button,
+.trail .current {
+  max-width: 10em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trail button {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.trail .current {
+  color: var(--fg);
+}
+
 .body {
+  position: relative;
   flex: 1;
   overflow-y: auto;
   padding: 12px 14px;
+}
+
+.deeper {
+  position: absolute;
+  z-index: 1;
+  max-width: 220px;
+  padding: 2px 10px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.25);
+  cursor: pointer;
 }
 
 .answer {

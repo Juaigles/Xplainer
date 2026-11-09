@@ -620,14 +620,27 @@ fn show_popup_near_cursor(app: &AppHandle) {
 fn explain_selection(app: &AppHandle) {
     mask_alt_menu();
     let window_title = foreground_window_title();
+    let in_popup = popup_is_foreground(app);
     // Keys still held: don't inject anything; the popup opens empty so the user can type the term.
     let text = if wait_for_modifiers_release() {
         capture_selection()
     } else {
         String::new()
     };
+    if in_popup {
+        // A word selected in an answer: explain it one level deeper, without moving the popup.
+        let _ = app.emit("explain-deeper", Selection { text, window_title });
+        return;
+    }
     let _ = app.emit("explain", Selection { text, window_title });
     show_popup_near_cursor(app);
+}
+
+fn popup_is_foreground(app: &AppHandle) -> bool {
+    let foreground = unsafe { GetForegroundWindow() };
+    app.get_webview_window("main")
+        .and_then(|window| window.hwnd().ok())
+        .is_some_and(|popup| std::ptr::eq(popup.0, foreground.0))
 }
 
 /// The installed app has no console, so errors must be shown in a window.

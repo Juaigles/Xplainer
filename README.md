@@ -36,6 +36,10 @@ La app vive oculta, con un icono en la bandeja del sistema. Si la abres otra vez
 
 En el recuadro: **Esc** lo oculta y la cabecera sirve para arrastrarlo.
 
+Bajo cada respuesta, **Más simple** y **Más técnico** cambian el nivel de la explicación, y **Otro significado** (solo con palabras o expresiones cortas) pide la siguiente acepción.
+
+Para explicar una palabra de la respuesta, selecciónala y pulsa el botón **Explicar «…»** que aparece al lado, o Alt+X. Se abre como un nivel más, con un rastro bajo la cabecera (TCP › handshake › SYN) para volver a cualquier nivel anterior.
+
 ## Desarrollar
 
 ```bash
