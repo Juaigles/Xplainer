@@ -7,7 +7,7 @@ use std::{
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex,
     },
     thread,
@@ -48,8 +48,9 @@ const SNIP_SHORTCUT_NAME: &str = "Win+Shift+Z";
 
 /// Two overlapping captures would race on the clipboard and could lose the user's copied text.
 static CAPTURING: AtomicBool = AtomicBool::new(false);
-/// One snip at a time. Apart from CAPTURING: a snip waits for the user, and Alt+X must still work.
-static SNIPPING: AtomicBool = AtomicBool::new(false);
+/// Numbers each Win+Shift+Z. A snip still waiting gives up when a newer one starts, so pressing
+/// it again after cancelling a snip (Esc) works at once.
+static LATEST_SNIP: AtomicU64 = AtomicU64::new(0);
 
 /// What the popup receives: the selected text and the title of the window it came from.
 #[derive(Clone, Serialize)]
@@ -729,27 +730,22 @@ fn explain_selection(app: &AppHandle) {
     show_popup_near_cursor(app);
 }
 
-/// Opens Windows' snipping tool and waits for the snip it copies to the clipboard. `None` if the
-/// user cancels (nothing arrives in a minute) or copies something else meanwhile.
-fn snip_screen() -> Option<arboard::ImageData<'static>> {
+/// Opens Windows' snipping tool and waits for the snip it copies to the clipboard, which keeps it
+/// as Win+Shift+S would. `None` if the user cancels (nothing arrives in 30 seconds or a newer
+/// snip starts) or copies something else meanwhile.
+fn snip_screen(snip: u64) -> Option<arboard::ImageData<'static>> {
     let mut clipboard = arboard::Clipboard::new().ok()?;
-    let previous = clipboard.get_text().ok();
     let sequence_before = unsafe { GetClipboardSequenceNumber() };
     Command::new("explorer").arg("ms-screenclip:").spawn().ok()?;
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while unsafe { GetClipboardSequenceNumber() } == sequence_before {
-        if Instant::now() > deadline {
+        if Instant::now() > deadline || LATEST_SNIP.load(Ordering::SeqCst) != snip {
             return None;
         }
         thread::sleep(Duration::from_millis(100));
     }
     thread::sleep(Duration::from_millis(100)); // Let the snipping tool finish writing.
-    let image = clipboard.get_image().ok()?; // Text copied instead: the user's, leave it.
-    // Like Alt+X: the clipboard keeps the text the user had.
-    if let Some(previous) = previous {
-        let _ = clipboard.set_text(previous);
-    }
-    Some(image)
+    clipboard.get_image().ok() // Text instead: the user copied something else.
 }
 
 /// Reads the text in an image with the OCR built into Windows, keeping its lines.
@@ -794,9 +790,9 @@ fn rows(mut lines: Vec<(f32, f32, f32, String)>) -> String {
     joined.collect::<Vec<_>>().join("\n")
 }
 
-fn explain_snip(app: &AppHandle) {
+fn explain_snip(app: &AppHandle, snip: u64) {
     let window_title = foreground_window_title();
-    let Some(image) = snip_screen() else {
+    let Some(image) = snip_screen(snip) else {
         return;
     };
     let failure = match recognize_text(&image) {
@@ -875,16 +871,11 @@ pub fn run() {
                             explain_selection(&app);
                             CAPTURING.store(false, Ordering::SeqCst);
                         });
-                    } else if pressed == &snip_shortcut
-                        && event.state() == ShortcutState::Pressed
-                        && !SNIPPING.swap(true, Ordering::SeqCst)
-                    {
+                    } else if pressed == &snip_shortcut && event.state() == ShortcutState::Pressed {
+                        let snip = LATEST_SNIP.fetch_add(1, Ordering::SeqCst) + 1;
                         let app = app.clone();
                         // Off the event loop: it waits for the user to snip.
-                        thread::spawn(move || {
-                            explain_snip(&app);
-                            SNIPPING.store(false, Ordering::SeqCst);
-                        });
+                        thread::spawn(move || explain_snip(&app, snip));
                     }
                 })
                 .build(),

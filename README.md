@@ -65,7 +65,7 @@ Cierra antes la app instalada: las dos usan el mismo atajo. En desarrollo, "Inic
 
 - Si la ruta de la carpeta del proyecto es muy larga (más de ~120 caracteres), el enlazador de Windows falla con `LNK1104`. Usa una carpeta corta o define `CARGO_TARGET_DIR`.
 - Mientras Xplanator está abierta, Alt+X deja de llegar a las demás apps; por ejemplo, en Word y Outlook ya no convierte un código Unicode en su carácter.
-- El OCR usa los idiomas de reconocimiento que Windows instala con tus idiomas de pantalla. Confunde a veces letras parecidas (l e I) y puede perder símbolos sueltos, como un `=` en código; el modelo suele entenderlo igual. Si no recortas nada en un minuto, el atajo se da por cancelado.
+- El OCR usa los idiomas de reconocimiento que Windows instala con tus idiomas de pantalla. Confunde a veces letras parecidas (l e I) y puede perder símbolos sueltos, como un `=` en código; el modelo suele entenderlo igual. Si no recortas nada en 30 segundos, el atajo se da por cancelado. El recorte se queda en el portapapeles, como con Win+Shift+S.
 - En una terminal sin texto seleccionado, Ctrl+C interrumpe el proceso en marcha. No uses el atajo ahí sin seleccionar algo.
 - VS Code copia la línea entera si no hay selección.
 - Solo se restaura texto plano. Si en el portapapeles tenías otra cosa (ficheros, una imagen) y usas el atajo con texto seleccionado, se pierde; y el texto con formato vuelve sin formato.

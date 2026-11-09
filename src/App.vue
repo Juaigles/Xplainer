@@ -524,16 +524,19 @@ async function saveNote() {
     return;
   }
   const started = generation;
+  // What goes into the file now; the conversation may grow while it is written.
+  const content = noteMarkdown();
+  const entries = chat.value.length;
   error.value = "";
   try {
     const path = await invoke<string>("save_note", {
       folder: notesFolder.value,
       title: term.value.split("\n")[0],
-      content: noteMarkdown(),
+      content,
       existing: note.value?.path ?? null,
     });
     // Another conversation may be on screen now; this note belongs to the one that was.
-    if (started === generation) note.value = { path, entries: chat.value.length };
+    if (started === generation) note.value = { path, entries };
   } catch (e) {
     if (started === generation) error.value = String(e);
   }
