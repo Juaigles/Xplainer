@@ -1040,22 +1040,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "explicador"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-single-instance",
- "ureq",
- "windows",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5042,6 +5026,22 @@ name = "xkeysym"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
+
+[[package]]
+name = "xplanator"
+version = "0.2.0"
+dependencies = [
+ "arboard",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-single-instance",
+ "ureq",
+ "windows",
+]
 
 [[package]]
 name = "yoke"

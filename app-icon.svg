@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Source for `npm run tauri icon app-icon.svg`. Colours from the original Tauri logo. -->
+  <defs>
+    <!-- The cyan stroke passes over the yellow one, with a gap, like the interlocked rings. -->
+    <mask id="under" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+      <rect width="1024" height="1024" fill="#fff" />
+      <line x1="232" y1="792" x2="792" y2="232" stroke="#000" stroke-width="250" />
+    </mask>
+  </defs>
+  <line x1="232" y1="232" x2="792" y2="792" stroke="#FFC131" stroke-width="160" stroke-linecap="round" mask="url(#under)" />
+  <line x1="232" y1="792" x2="792" y2="232" stroke="#24C8DB" stroke-width="160" stroke-linecap="round" />
+</svg>

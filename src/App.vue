@@ -52,7 +52,7 @@ const SUBSCRIPTION_MODELS: ModelOption[] = [
   { id: "claude", label: "Claude Haiku · suscripción", provider: "claude", model: "claude-haiku-5-5" },
   { id: "codex", label: "Codex GPT-5.6 Luna · suscripción", provider: "codex", model: "gpt-5.6-luna" },
 ];
-const STORAGE_KEY = "explicador.model";
+const STORAGE_KEY = "xplanator.model";
 
 const SUGGESTION_LINE = /^\s*>>?\s*/;
 
@@ -305,7 +305,7 @@ onUnmounted(() => {
 <template>
   <main class="popup">
     <header data-tauri-drag-region>
-      <span class="term" data-tauri-drag-region :title="term">{{ term || "Explicador" }}</span>
+      <span class="term" data-tauri-drag-region :title="term">{{ term || "Xplanator" }}</span>
       <select v-model="selectedId" class="model" title="Modelo que explica" @focus="refreshOllamaModels">
         <option v-for="option in models" :key="option.id" :value="option.id">{{ option.label }}</option>
       </select>

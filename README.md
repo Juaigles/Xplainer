@@ -1,4 +1,4 @@
-# Explicador
+# Xplanator
 
 Selecciona un texto en cualquier app de Windows, pulsa **Alt+X** y aparece un recuadro con una explicación breve y didáctica del término. Puedes repreguntar escribiendo o pulsando una de las preguntas sugeridas.
 
@@ -24,9 +24,11 @@ npm install
 npm run tauri build
 ```
 
-Genera el instalador en `src-tauri/target/release/bundle/nsis/Explicador_0.1.0_x64-setup.exe`. Se instala para tu usuario, sin permisos de administrador, y queda en el menú Inicio. Como el instalador no está firmado, Windows SmartScreen avisa la primera vez: **Más información → Ejecutar de todas formas**.
+Genera el instalador en `src-tauri/target/release/bundle/nsis/Xplanator_0.2.0_x64-setup.exe`. Se instala para tu usuario, sin permisos de administrador, y queda en el menú Inicio. Como el instalador no está firmado, Windows SmartScreen avisa la primera vez: **Más información → Ejecutar de todas formas**.
 
 Para que arranque sola al iniciar sesión: clic derecho en el icono de la bandeja → **Iniciar con Windows**. Viene desactivado; tú decides. Para desinstalarla: Configuración de Windows → Aplicaciones.
+
+Xplanator es el nuevo nombre de Explicador. Windows las trata como apps distintas y las dos usan el mismo atajo, así que desinstala Explicador antes de instalar Xplanator.
 
 ## Usar
 
@@ -52,7 +54,7 @@ Cierra antes la app instalada: las dos usan el mismo atajo. En desarrollo, "Inic
 ## Límites conocidos
 
 - Si la ruta de la carpeta del proyecto es muy larga (más de ~120 caracteres), el enlazador de Windows falla con `LNK1104`. Usa una carpeta corta o define `CARGO_TARGET_DIR`.
-- Mientras Explicador está abierta, Alt+X deja de llegar a las demás apps; por ejemplo, en Word y Outlook ya no convierte un código Unicode en su carácter.
+- Mientras Xplanator está abierta, Alt+X deja de llegar a las demás apps; por ejemplo, en Word y Outlook ya no convierte un código Unicode en su carácter.
 - En una terminal sin texto seleccionado, Ctrl+C interrumpe el proceso en marcha. No uses el atajo ahí sin seleccionar algo.
 - VS Code copia la línea entera si no hay selección.
 - Solo se restaura texto plano. Si en el portapapeles tenías otra cosa (ficheros, una imagen) y usas el atajo con texto seleccionado, se pierde; y el texto con formato vuelve sin formato.

@@ -590,7 +590,7 @@ fn explain_selection(app: &AppHandle) {
 /// The installed app has no console, so errors must be shown in a window.
 fn show_error(message: &str) {
     unsafe {
-        MessageBoxW(None, &HSTRING::from(message), w!("Explicador"), MB_OK | MB_ICONERROR);
+        MessageBoxW(None, &HSTRING::from(message), w!("Xplanator"), MB_OK | MB_ICONERROR);
     }
 }
 
@@ -680,7 +680,7 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&autostart, &quit])?;
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip(format!("Explicador: selecciona un texto y pulsa {SHORTCUT_NAME}"))
+                .tooltip(format!("Xplanator: selecciona un texto y pulsa {SHORTCUT_NAME}"))
                 .menu(&menu)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     "autostart" => toggle_autostart(app, &autostart),
