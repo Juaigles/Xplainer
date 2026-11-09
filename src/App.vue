@@ -89,6 +89,7 @@ const chat = ref<ChatEntry[]>([]);
 const input = ref("");
 const error = ref("");
 const streaming = ref(false);
+const loadingModel = ref(false);
 const ollamaModels = ref<string[]>([]);
 const selectedId = ref(readStoredModel());
 const body = ref<HTMLElement>();
@@ -136,6 +137,19 @@ watch(selectedId, (id) => {
 async function refreshOllamaModels() {
   ollamaModels.value = await invoke<string[]>("ollama_models");
 }
+
+/** Ollama's cloud models run on its servers: nothing to load on this computer. */
+function isLocalOllama(option: ModelOption): boolean {
+  return option.provider === "ollama" && !option.model.includes("cloud");
+}
+
+// A local model takes about a minute to load on a CPU: start as soon as it is chosen.
+watch(selectedId, (id) => {
+  const option = models.value.find((model) => model.id === id);
+  if (option && isLocalOllama(option)) {
+    invoke("preload_ollama", { model: option.model }).catch(() => {}); // Best effort: asking shows any error.
+  }
+});
 
 const rephrasings = computed(() => {
   const last = chat.value[chat.value.length - 1];
@@ -237,6 +251,9 @@ async function ask(content: string, shown?: string) {
   if (streaming.value) return;
   const started = generation;
   const option = await chosenModel();
+  // Before the check below: no other ask may start between it and `streaming = true`.
+  const loading =
+    option !== undefined && isLocalOllama(option) && !(await invoke<boolean>("ollama_loaded", { model: option.model }));
   if (started !== generation || streaming.value) return;
   if (!option) {
     error.value = UNAVAILABLE;
@@ -251,6 +268,7 @@ async function ask(content: string, shown?: string) {
     answer.text += delta;
   };
   error.value = "";
+  loadingModel.value = loading;
   streaming.value = true;
   const request: Request = { id: nextRequestId++, aborted: false, cancel: () => {} };
   current = request;
@@ -269,6 +287,7 @@ async function ask(content: string, shown?: string) {
     if (current === request) {
       current = null;
       streaming.value = false;
+      loadingModel.value = false;
     }
   }
 }
@@ -356,7 +375,9 @@ onUnmounted(() => {
       <template v-for="(entry, index) in chat" :key="index">
         <p v-if="entry.role === 'user'" class="question">{{ entry.text }}</p>
         <p v-else-if="answerText(entry.text)" class="answer">{{ answerText(entry.text) }}</p>
-        <p v-else-if="streaming && index === chat.length - 1" class="notice">Pensando…</p>
+        <p v-else-if="streaming && index === chat.length - 1" class="notice">
+          {{ loadingModel ? "Cargando el modelo en memoria…" : "Pensando…" }}
+        </p>
       </template>
 
       <p v-if="error" class="error">{{ error }}</p>

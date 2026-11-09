@@ -51,6 +51,9 @@ struct Selection {
 /// Hides the console window that Windows would open for a child process.
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const OLLAMA_URL: &str = "http://127.0.0.1:11434";
+/// How long a local model stays in memory after its last use. Ollama's default is 5 minutes,
+/// and reloading a big model on a CPU takes about a minute.
+const OLLAMA_KEEP_ALIVE: &str = "30m";
 
 /// Tracks the answer in flight, whatever model gives it. Request ids only grow, so cancelling
 /// one also covers every older one: a cancel that arrives before its request starts still counts.
@@ -373,7 +376,9 @@ fn run_ollama(
 ) -> Result<String, String> {
     let mut chat = vec![json!({ "role": "system", "content": system })];
     chat.extend(messages.iter().map(|message| json!({ "role": message.role, "content": message.content })));
-    let mut body = json!({ "model": model, "messages": chat, "stream": true, "think": false });
+    let mut body = json!({
+        "model": model, "messages": chat, "stream": true, "think": false, "keep_alive": OLLAMA_KEEP_ALIVE,
+    });
     let url = format!("{OLLAMA_URL}/api/chat");
     let agent = ollama(None); // No timeout: loading a model can take minutes on a CPU.
     let send = |body: &Value| {
@@ -443,6 +448,44 @@ fn response_error(response: &mut ureq::http::Response<ureq::Body>) -> Option<Str
     }
     let body: Value = response.body_mut().read_json().unwrap_or(Value::Null);
     Some(body["error"].as_str().map(String::from).unwrap_or_else(|| format!("error HTTP {status}")))
+}
+
+/// Loads a local model into memory ahead of the first question (Ollama loads a model when it
+/// gets a chat with no messages). Waits until it is loaded, which can take minutes on a CPU.
+#[tauri::command]
+async fn preload_ollama(model: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || preload(&model))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn preload(model: &str) -> Result<(), String> {
+    let body = json!({ "model": model, "messages": [], "keep_alive": OLLAMA_KEEP_ALIVE });
+    let mut response = ollama(None)
+        .post(format!("{OLLAMA_URL}/api/chat"))
+        .send_json(&body)
+        .map_err(|error| error.to_string())?;
+    match response_error(&mut response) {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// Whether the model is already in memory, so the popup can say it is loading instead of thinking.
+#[tauri::command]
+async fn ollama_loaded(model: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || is_loaded(&model)).await.unwrap_or(false)
+}
+
+fn is_loaded(model: &str) -> bool {
+    let running: Option<Value> = ollama(Some(Duration::from_secs(2)))
+        .get(format!("{OLLAMA_URL}/api/ps"))
+        .call()
+        .ok()
+        .and_then(|mut response| response.body_mut().read_json().ok());
+    running.as_ref().and_then(|running| running["models"].as_array()).is_some_and(|models| {
+        models.iter().any(|loaded| loaded["name"] == model || loaded["model"] == model)
+    })
 }
 
 /// Models in Ollama that can chat; empty if Ollama is not running.
@@ -651,6 +694,8 @@ pub fn run() {
             ask_codex,
             ask_ollama,
             ollama_models,
+            preload_ollama,
+            ollama_loaded,
             cancel_answer
         ])
         .on_window_event(|window, event| {

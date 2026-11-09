@@ -10,7 +10,7 @@ Se eligen en el desplegable de la cabecera del recuadro, que recuerda la última
 
 - **Claude Haiku · suscripción**: tu plan de Claude a través de Claude Code (`claude -p`). Gasta de tus límites de uso. Necesita Claude Code instalado con el instalador nativo (`claude.exe` en el PATH; la instalación por npm no sirve) y con la sesión iniciada.
 - **Codex GPT-5.6 Luna · suscripción**: tu plan de ChatGPT a través de Codex (`codex exec`). Gasta de tus límites de Codex. La respuesta aparece entera al final, no poco a poco. Necesita Codex con la sesión de ChatGPT iniciada.
-- **Modelos de Ollama · gratis**: el desplegable lista los que tengas instalados (se refresca al abrirlo). Sin GPU dedicada, los modelos grandes van lentos; uno pequeño responde antes. Los modelos de la nube de Ollama (por ejemplo, los grandes de DeepSeek o Kimi, que no caben en un portátil) aparecen igual si los añades con `ollama pull` y has iniciado sesión en Ollama; su plan gratuito tiene límites.
+- **Modelos de Ollama · gratis**: el desplegable lista los que tengas instalados (se refresca al abrirlo). Sin GPU dedicada, los modelos grandes van lentos; uno pequeño responde antes. Al elegir un modelo local en el desplegable, Xplanator lo carga en memoria en ese momento y lo mantiene 30 minutos desde su último uso (Ollama, por defecto, 5), para que no esperes a la carga al preguntar; mientras, ocupa RAM. Si aún se está cargando, el recuadro dice «Cargando el modelo en memoria…». Los modelos de la nube de Ollama (por ejemplo, los grandes de DeepSeek o Kimi, que no caben en un portátil) aparecen igual si los añades con `ollama pull` y has iniciado sesión en Ollama; su plan gratuito tiene límites.
 
 ## Requisitos
 
