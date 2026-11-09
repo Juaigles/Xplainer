@@ -2,6 +2,8 @@
 
 Selecciona un texto en cualquier app de Windows, pulsa **Alt+X** y aparece un recuadro con una explicación breve y didáctica del término. Puedes repreguntar escribiendo o pulsando una de las preguntas sugeridas.
 
+Si el texto no se puede seleccionar (en una imagen, un vídeo, un PDF bloqueado), pulsa **Win+Shift+Z**, recorta la zona con la herramienta de recortes de Windows y Xplanator lee el texto con el OCR de Windows y lo explica.
+
 Hecho con Tauri v2 (Rust) + Vue 3 + TypeScript.
 
 ## Modelos
@@ -54,7 +56,7 @@ Cierra antes la app instalada: las dos usan el mismo atajo. En desarrollo, "Inic
 
 ## Cómo funciona
 
-1. `src-tauri/src/lib.rs` registra el atajo global. Al pulsarlo, espera a que sueltes las teclas, simula Ctrl+C, lee el portapapeles y deja tu texto anterior como estaba.
+1. `src-tauri/src/lib.rs` registra el atajo global. Al pulsarlo, espera a que sueltes las teclas, simula Ctrl+C, lee el portapapeles y deja tu texto anterior como estaba. Con Win+Shift+Z abre la herramienta de recortes (`ms-screenclip:`), espera la imagen en el portapapeles y la lee con `Windows.Media.Ocr`.
 2. Envía al recuadro el texto y el título de la ventana de origen (pista para elegir el significado correcto).
 3. `src/App.vue` manda la pregunta a Rust con el prompt pedagógico y guarda el historial para las repreguntas, como texto, así que puedes cambiar de modelo a mitad de conversación.
 4. Rust habla con el modelo elegido: lanza `claude -p` o `codex exec` sin servidores MCP y sin guardar la sesión, o llama a Ollama en `http://127.0.0.1:11434`. Claude va sin herramientas, sin tu configuración ni tu `CLAUDE.md`; Codex, sin shell, sin conectores, sin tu configuración ni tus reglas y en modo solo lectura (el texto seleccionado puede traer instrucciones de terceros). A ninguno le llegan claves de API del entorno, para que siempre use tu suscripción. A las CLI les reenvía la conversación entera en cada repregunta.
@@ -63,6 +65,7 @@ Cierra antes la app instalada: las dos usan el mismo atajo. En desarrollo, "Inic
 
 - Si la ruta de la carpeta del proyecto es muy larga (más de ~120 caracteres), el enlazador de Windows falla con `LNK1104`. Usa una carpeta corta o define `CARGO_TARGET_DIR`.
 - Mientras Xplanator está abierta, Alt+X deja de llegar a las demás apps; por ejemplo, en Word y Outlook ya no convierte un código Unicode en su carácter.
+- El OCR usa los idiomas de reconocimiento que Windows instala con tus idiomas de pantalla. Confunde a veces letras parecidas (l e I) y puede perder símbolos sueltos, como un `=` en código; el modelo suele entenderlo igual. Si no recortas nada en un minuto, el atajo se da por cancelado.
 - En una terminal sin texto seleccionado, Ctrl+C interrumpe el proceso en marcha. No uses el atajo ahí sin seleccionar algo.
 - VS Code copia la línea entera si no hay selección.
 - Solo se restaura texto plano. Si en el portapapeles tenías otra cosa (ficheros, una imagen) y usas el atajo con texto seleccionado, se pierde; y el texto con formato vuelve sin formato.

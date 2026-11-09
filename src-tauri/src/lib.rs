@@ -23,6 +23,9 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use windows::{
     core::{w, HSTRING},
+    Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap},
+    Media::Ocr::OcrEngine,
+    Storage::Streams::DataWriter,
     Win32::{
         System::DataExchange::GetClipboardSequenceNumber,
         UI::{
@@ -40,8 +43,13 @@ use windows::{
 
 const SHORTCUT_NAME: &str = "Alt+X";
 
+/// For text that cannot be selected (in an image, a video, a locked PDF): snip it and read it.
+const SNIP_SHORTCUT_NAME: &str = "Win+Shift+Z";
+
 /// Two overlapping captures would race on the clipboard and could lose the user's copied text.
 static CAPTURING: AtomicBool = AtomicBool::new(false);
+/// One snip at a time. Apart from CAPTURING: a snip waits for the user, and Alt+X must still work.
+static SNIPPING: AtomicBool = AtomicBool::new(false);
 
 /// What the popup receives: the selected text and the title of the window it came from.
 #[derive(Clone, Serialize)]
@@ -721,6 +729,90 @@ fn explain_selection(app: &AppHandle) {
     show_popup_near_cursor(app);
 }
 
+/// Opens Windows' snipping tool and waits for the snip it copies to the clipboard. `None` if the
+/// user cancels (nothing arrives in a minute) or copies something else meanwhile.
+fn snip_screen() -> Option<arboard::ImageData<'static>> {
+    let mut clipboard = arboard::Clipboard::new().ok()?;
+    let previous = clipboard.get_text().ok();
+    let sequence_before = unsafe { GetClipboardSequenceNumber() };
+    Command::new("explorer").arg("ms-screenclip:").spawn().ok()?;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while unsafe { GetClipboardSequenceNumber() } == sequence_before {
+        if Instant::now() > deadline {
+            return None;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    thread::sleep(Duration::from_millis(100)); // Let the snipping tool finish writing.
+    let image = clipboard.get_image().ok()?; // Text copied instead: the user's, leave it.
+    // Like Alt+X: the clipboard keeps the text the user had.
+    if let Some(previous) = previous {
+        let _ = clipboard.set_text(previous);
+    }
+    Some(image)
+}
+
+/// Reads the text in an image with the OCR built into Windows, keeping its lines.
+fn recognize_text(image: &arboard::ImageData) -> windows::core::Result<String> {
+    let mut pixels = image.bytes.to_vec();
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        pixel.swap(0, 2); // arboard gives RGBA; the bitmap wants BGRA.
+    }
+    let writer = DataWriter::new()?;
+    writer.WriteBytes(&pixels)?;
+    let (width, height) = (image.width as i32, image.height as i32);
+    let bitmap = SoftwareBitmap::CreateCopyFromBuffer(&writer.DetachBuffer()?, BitmapPixelFormat::Bgra8, width, height)?;
+    // Uses the OCR languages installed with the user's Windows display languages.
+    let engine = OcrEngine::TryCreateFromUserProfileLanguages()?;
+    let result = engine.RecognizeAsync(&bitmap)?.join()?;
+    let mut lines = Vec::new(); // (top, bottom, left, text)
+    for line in result.Lines()? {
+        let boxes = line.Words()?.into_iter().map(|word| word.BoundingRect()).collect::<windows::core::Result<Vec<_>>>()?;
+        let top = boxes.iter().map(|b| b.Y).fold(f32::MAX, f32::min);
+        let bottom = boxes.iter().map(|b| b.Y + b.Height).fold(0.0, f32::max);
+        let left = boxes.iter().map(|b| b.X).fold(f32::MAX, f32::min);
+        lines.push((top, bottom, left, line.Text()?.to_string()));
+    }
+    Ok(rows(lines))
+}
+
+/// The OCR splits a line where it sees a wide gap (common in code) and may list the halves out of
+/// order: join the pieces that share a row, left to right, and the rows top to bottom.
+fn rows(mut lines: Vec<(f32, f32, f32, String)>) -> String {
+    lines.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut rows: Vec<(f32, Vec<(f32, String)>)> = Vec::new(); // (middle, pieces)
+    for (top, bottom, left, text) in lines {
+        match rows.last_mut() {
+            Some((middle, pieces)) if top < *middle => pieces.push((left, text)),
+            _ => rows.push(((top + bottom) / 2.0, vec![(left, text)])),
+        }
+    }
+    let joined = rows.into_iter().map(|(_, mut pieces)| {
+        pieces.sort_by(|a, b| a.0.total_cmp(&b.0));
+        pieces.into_iter().map(|(_, text)| text).collect::<Vec<_>>().join(" ")
+    });
+    joined.collect::<Vec<_>>().join("\n")
+}
+
+fn explain_snip(app: &AppHandle) {
+    let window_title = foreground_window_title();
+    let Some(image) = snip_screen() else {
+        return;
+    };
+    let failure = match recognize_text(&image) {
+        Ok(text) if !text.trim().is_empty() => {
+            let _ = app.emit("explain", Selection { text, window_title });
+            None
+        }
+        Ok(_) => Some("No he encontrado texto en el recorte.".to_string()),
+        Err(error) => Some(format!("No se pudo leer el texto del recorte: {}", error.message())),
+    };
+    if let Some(message) = failure {
+        let _ = app.emit("snip-failed", message);
+    }
+    show_popup_near_cursor(app);
+}
+
 fn popup_is_foreground(app: &AppHandle) -> bool {
     let foreground = unsafe { GetForegroundWindow() };
     app.get_webview_window("main")
@@ -752,6 +844,7 @@ fn toggle_autostart<R: Runtime>(app: &AppHandle<R>, item: &CheckMenuItem<R>) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let shortcut = Shortcut::new(Some(Modifiers::ALT), Code::KeyX);
+    let snip_shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyZ);
 
     tauri::Builder::default()
         // First plugin, as its docs require: launching the app again (e.g. from the Start menu)
@@ -781,6 +874,16 @@ pub fn run() {
                         thread::spawn(move || {
                             explain_selection(&app);
                             CAPTURING.store(false, Ordering::SeqCst);
+                        });
+                    } else if pressed == &snip_shortcut
+                        && event.state() == ShortcutState::Pressed
+                        && !SNIPPING.swap(true, Ordering::SeqCst)
+                    {
+                        let app = app.clone();
+                        // Off the event loop: it waits for the user to snip.
+                        thread::spawn(move || {
+                            explain_snip(&app);
+                            SNIPPING.store(false, Ordering::SeqCst);
                         });
                     }
                 })
@@ -813,6 +916,12 @@ pub fn run() {
                 ));
                 return Err(error.into());
             }
+            // Not essential: without it, Alt+X still works.
+            if let Err(error) = app.global_shortcut().register(snip_shortcut) {
+                show_error(&format!(
+                    "No se pudo registrar el atajo {SNIP_SHORTCUT_NAME} para explicar el texto de un recorte. Puede que otra app lo esté usando; {SHORTCUT_NAME} sigue funcionando.\n\n{error}"
+                ));
+            }
 
             // Off by default: starting with Windows is the user's choice, from the tray menu.
             // Not from a dev build: it would register the dev executable under the same name.
@@ -826,7 +935,9 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&autostart, &quit])?;
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip(format!("Xplanator: selecciona un texto y pulsa {SHORTCUT_NAME}"))
+                .tooltip(format!(
+                    "Xplanator: selecciona un texto y pulsa {SHORTCUT_NAME}, o recórtalo con {SNIP_SHORTCUT_NAME}"
+                ))
                 .menu(&menu)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     "autostart" => toggle_autostart(app, &autostart),

@@ -600,6 +600,7 @@ function onKeydown(event: KeyboardEvent) {
 
 let unlistenExplain: UnlistenFn | undefined;
 let unlistenDeeper: UnlistenFn | undefined;
+let unlistenSnipFailed: UnlistenFn | undefined;
 
 onMounted(async () => {
   window.addEventListener("keydown", onKeydown);
@@ -607,6 +608,11 @@ onMounted(async () => {
   unlistenExplain = await listen<Selection>("explain", (event) => start(event.payload));
   // The shortcut pressed inside this popup, on a word of an answer.
   unlistenDeeper = await listen<Selection>("explain-deeper", (event) => explainDeeper(event.payload.text));
+  // Win+Shift+Z found no text in the snip: the popup opens empty, saying so.
+  unlistenSnipFailed = await listen<string>("snip-failed", (event) => {
+    start({ text: "", window_title: "" });
+    error.value = event.payload;
+  });
   void refreshOllamaModels();
   void loadHistory();
 });
@@ -617,6 +623,7 @@ onUnmounted(() => {
   window.removeEventListener("keydown", onKeydown);
   unlistenExplain?.();
   unlistenDeeper?.();
+  unlistenSnipFailed?.();
 });
 </script>
 
@@ -698,7 +705,8 @@ onUnmounted(() => {
       </button>
 
       <p v-if="!term" class="notice">
-        Selecciona un texto en cualquier app y pulsa Alt+X, o escribe abajo qué quieres que te explique.
+        Selecciona un texto en cualquier app y pulsa Alt+X, o escribe abajo qué quieres que te explique. Si el texto no
+        se puede seleccionar (en una imagen, un vídeo…), pulsa Win+Shift+Z y recórtalo.
       </p>
 
       <template v-for="(entry, index) in chat" :key="index">
