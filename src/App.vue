@@ -314,7 +314,7 @@ onUnmounted(() => {
 
     <section ref="body" class="body">
       <p v-if="!term" class="notice">
-        Selecciona un texto en cualquier app y pulsa Win+Shift+X, o escribe abajo qué quieres que te explique.
+        Selecciona un texto en cualquier app y pulsa Alt+X, o escribe abajo qué quieres que te explique.
       </p>
 
       <template v-for="(entry, index) in chat" :key="index">

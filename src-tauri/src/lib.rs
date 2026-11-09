@@ -36,7 +36,7 @@ use windows::{
     },
 };
 
-const SHORTCUT_NAME: &str = "Win+Shift+X";
+const SHORTCUT_NAME: &str = "Alt+X";
 
 /// Two overlapping captures would race on the clipboard and could lose the user's copied text.
 static CAPTURING: AtomicBool = AtomicBool::new(false);
@@ -517,6 +517,15 @@ fn send_ctrl_c() {
     unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
 }
 
+/// The shortcut swallows the X, so if Alt is released first the source app sees Alt pressed
+/// alone and opens its menu, which would eat our Ctrl+C. Tapping an unassigned key while Alt
+/// is still held prevents that (the "menu mask" trick AutoHotkey uses).
+fn mask_alt_menu() {
+    let unassigned = VIRTUAL_KEY(0xE8);
+    let inputs = [key_input(unassigned, false), key_input(unassigned, true)];
+    unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+}
+
 /// Windows has no universal "read the selection" API, so we copy it with a simulated
 /// Ctrl+C and then put the previous clipboard text back.
 fn capture_selection() -> String {
@@ -566,6 +575,7 @@ fn show_popup_near_cursor(app: &AppHandle) {
 }
 
 fn explain_selection(app: &AppHandle) {
+    mask_alt_menu();
     let window_title = foreground_window_title();
     // Keys still held: don't inject anything; the popup opens empty so the user can type the term.
     let text = if wait_for_modifiers_release() {
@@ -600,7 +610,7 @@ fn toggle_autostart<R: Runtime>(app: &AppHandle<R>, item: &CheckMenuItem<R>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyX);
+    let shortcut = Shortcut::new(Some(Modifiers::ALT), Code::KeyX);
 
     tauri::Builder::default()
         // First plugin, as its docs require: launching the app again (e.g. from the Start menu)

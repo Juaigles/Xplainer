@@ -1,6 +1,6 @@
 # Explicador
 
-Selecciona un texto en cualquier app de Windows, pulsa **Win+Shift+X** y aparece un recuadro con una explicación breve y didáctica del término. Puedes repreguntar escribiendo o pulsando una de las preguntas sugeridas.
+Selecciona un texto en cualquier app de Windows, pulsa **Alt+X** y aparece un recuadro con una explicación breve y didáctica del término. Puedes repreguntar escribiendo o pulsando una de las preguntas sugeridas.
 
 Hecho con Tauri v2 (Rust) + Vue 3 + TypeScript.
 
@@ -52,6 +52,7 @@ Cierra antes la app instalada: las dos usan el mismo atajo. En desarrollo, "Inic
 ## Límites conocidos
 
 - Si la ruta de la carpeta del proyecto es muy larga (más de ~120 caracteres), el enlazador de Windows falla con `LNK1104`. Usa una carpeta corta o define `CARGO_TARGET_DIR`.
+- Mientras Explicador está abierta, Alt+X deja de llegar a las demás apps; por ejemplo, en Word y Outlook ya no convierte un código Unicode en su carácter.
 - En una terminal sin texto seleccionado, Ctrl+C interrumpe el proceso en marcha. No uses el atajo ahí sin seleccionar algo.
 - VS Code copia la línea entera si no hay selección.
 - Solo se restaura texto plano. Si en el portapapeles tenías otra cosa (ficheros, una imagen) y usas el atajo con texto seleccionado, se pierde; y el texto con formato vuelve sin formato.
