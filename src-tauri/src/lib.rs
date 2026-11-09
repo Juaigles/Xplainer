@@ -13,22 +13,30 @@ use std::{
 };
 use tauri::{
     ipc::Channel,
-    menu::{Menu, MenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager, PhysicalPosition, WindowEvent,
+    AppHandle, Emitter, Manager, PhysicalPosition, Runtime, WindowEvent,
 };
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
-use windows::Win32::{
-    System::DataExchange::GetClipboardSequenceNumber,
-    UI::{
-        Input::KeyboardAndMouse::{
-            GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-            KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_C, VK_CONTROL, VK_LWIN, VK_MENU,
-            VK_RWIN, VK_SHIFT,
+use windows::{
+    core::{w, HSTRING},
+    Win32::{
+        System::DataExchange::GetClipboardSequenceNumber,
+        UI::{
+            Input::KeyboardAndMouse::{
+                GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+                KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_C, VK_CONTROL, VK_LWIN,
+                VK_MENU, VK_RWIN, VK_SHIFT,
+            },
+            WindowsAndMessaging::{
+                GetForegroundWindow, GetWindowTextW, MessageBoxW, MB_ICONERROR, MB_OK,
+            },
         },
-        WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW},
     },
 };
+
+const SHORTCUT_NAME: &str = "Win+Shift+X";
 
 /// Two overlapping captures would race on the clipboard and could lose the user's copied text.
 static CAPTURING: AtomicBool = AtomicBool::new(false);
@@ -569,11 +577,47 @@ fn explain_selection(app: &AppHandle) {
     show_popup_near_cursor(app);
 }
 
+/// The installed app has no console, so errors must be shown in a window.
+fn show_error(message: &str) {
+    unsafe {
+        MessageBoxW(None, &HSTRING::from(message), w!("Explicador"), MB_OK | MB_ICONERROR);
+    }
+}
+
+/// Toggles "Iniciar con Windows" and shows in the tray menu what Windows really has.
+fn toggle_autostart<R: Runtime>(app: &AppHandle<R>, item: &CheckMenuItem<R>) {
+    let autolaunch = app.autolaunch();
+    let result = if autolaunch.is_enabled().unwrap_or(false) {
+        autolaunch.disable()
+    } else {
+        autolaunch.enable()
+    };
+    let _ = item.set_checked(autolaunch.is_enabled().unwrap_or(false));
+    if let Err(error) = result {
+        show_error(&format!("No se pudo cambiar el inicio con Windows.\n\n{error}"));
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::ALT), Code::KeyE);
+    let shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyX);
 
     tauri::Builder::default()
+        // First plugin, as its docs require: launching the app again (e.g. from the Start menu)
+        // just opens the popup of the copy already running.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // Already on screen: just bring it forward and keep the conversation.
+            if let Some(window) = app.get_webview_window("main") {
+                if window.is_visible().unwrap_or(false) {
+                    let _ = window.set_focus();
+                    return;
+                }
+            }
+            let empty = Selection { text: String::new(), window_title: String::new() };
+            let _ = app.emit("explain", empty);
+            show_popup_near_cursor(app);
+        }))
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, pressed, event| {
@@ -607,20 +651,31 @@ pub fn run() {
             }
         })
         .setup(move |app| {
-            app.global_shortcut().register(shortcut).map_err(|error| {
-                format!("Could not register Win+Alt+E (is another app using it?): {error}")
-            })?;
+            if let Err(error) = app.global_shortcut().register(shortcut) {
+                show_error(&format!(
+                    "No se pudo registrar el atajo {SHORTCUT_NAME}. Puede que otra app lo esté usando.\n\n{error}"
+                ));
+                return Err(error.into());
+            }
 
+            // Off by default: starting with Windows is the user's choice, from the tray menu.
+            // Not from a dev build: it would register the dev executable under the same name.
+            let installed = !cfg!(debug_assertions);
+            let starts_with_windows = app.autolaunch().is_enabled().unwrap_or(false);
+            let label = if installed { "Iniciar con Windows" } else { "Iniciar con Windows (solo en la app instalada)" };
+            let autostart = CheckMenuItem::with_id(
+                app, "autostart", label, installed, starts_with_windows, None::<&str>,
+            )?;
             let quit = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&quit])?;
+            let menu = Menu::with_items(app, &[&autostart, &quit])?;
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("Explicador: selecciona un texto y pulsa Win+Alt+E")
+                .tooltip(format!("Explicador: selecciona un texto y pulsa {SHORTCUT_NAME}"))
                 .menu(&menu)
-                .on_menu_event(|app, event| {
-                    if event.id.as_ref() == "quit" {
-                        app.exit(0);
-                    }
+                .on_menu_event(move |app, event| match event.id.as_ref() {
+                    "autostart" => toggle_autostart(app, &autostart),
+                    "quit" => app.exit(0),
+                    _ => {}
                 })
                 .build(app)?;
             Ok(())

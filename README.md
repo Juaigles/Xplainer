@@ -1,6 +1,6 @@
 # Explicador
 
-Selecciona un texto en cualquier app de Windows, pulsa **Win+Alt+E** y aparece un recuadro con una explicación breve y didáctica del término. Puedes repreguntar escribiendo o pulsando una de las preguntas sugeridas.
+Selecciona un texto en cualquier app de Windows, pulsa **Win+Shift+X** y aparece un recuadro con una explicación breve y didáctica del término. Puedes repreguntar escribiendo o pulsando una de las preguntas sugeridas.
 
 Hecho con Tauri v2 (Rust) + Vue 3 + TypeScript.
 
@@ -17,16 +17,30 @@ Se eligen en el desplegable de la cabecera del recuadro, que recuerda la última
 - Node.js y Rust (`rustup`, toolchain `stable-msvc`).
 - Build Tools de Visual Studio con C++ y el SDK de Windows.
 
-## Arrancar
+## Instalar
 
 ```bash
 npm install
+npm run tauri build
+```
+
+Genera el instalador en `src-tauri/target/release/bundle/nsis/Explicador_0.1.0_x64-setup.exe`. Se instala para tu usuario, sin permisos de administrador, y queda en el menú Inicio. Como el instalador no está firmado, Windows SmartScreen avisa la primera vez: **Más información → Ejecutar de todas formas**.
+
+Para que arranque sola al iniciar sesión: clic derecho en el icono de la bandeja → **Iniciar con Windows**. Viene desactivado; tú decides. Para desinstalarla: Configuración de Windows → Aplicaciones.
+
+## Usar
+
+La app vive oculta, con un icono en la bandeja del sistema. Si la abres otra vez desde el menú Inicio, no arranca una segunda copia: abre el recuadro de la que ya está en marcha. Para salir: clic derecho en el icono → **Salir**.
+
+En el recuadro: **Esc** lo oculta y la cabecera sirve para arrastrarlo.
+
+## Desarrollar
+
+```bash
 npm run tauri dev
 ```
 
-La app arranca oculta, con un icono en la bandeja del sistema. Para salir: clic derecho en el icono → **Salir**.
-
-En el recuadro: **Esc** lo oculta y la cabecera sirve para arrastrarlo.
+Cierra antes la app instalada: las dos usan el mismo atajo. En desarrollo, "Iniciar con Windows" aparece desactivado; actívalo desde la app instalada.
 
 ## Cómo funciona
 

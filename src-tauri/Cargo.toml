@@ -25,6 +25,8 @@ tauri-plugin-global-shortcut = "2.4.1"
 arboard = "3.7.0"
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 ureq = { version = "3.5.1", default-features = false, features = ["json"] }
+tauri-plugin-autostart = "2.7.0"
+tauri-plugin-single-instance = "2.5.5"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
