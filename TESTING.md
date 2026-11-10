@@ -40,7 +40,11 @@ Los datos de `src-tauri/tests/fixtures` son salidas reales de `claude -p`, `code
 - **C4.** Una selección nueva cancela la respuesta en curso. Test de frontend: "cancels the answer in flight when a new selection arrives".
 
 ### Asistente de primera vez y elección de modelo
-- **A1.** La primera vez se elige el modelo local gratuito, y Claude y Codex solo aparecen si están instalados. Test de frontend: "picks the free local model on first run…".
+- **A0.** La primera vez se pregunta con qué IA explicar (Claude, ChatGPT o gratis con Ollama), sin preguntar ni precargar nada antes; la selección pendiente se explica al elegir, y la elección se recuerda. Test de frontend: "asks which AI to use first…".
+- **A0b.** Cada opción dice qué le falta: iniciar sesión abre el login del propio CLI y se usa sola al detectarlo; si no está instalada, abre la guía oficial; la local guía la instalación de Ollama. Tests de frontend: "opens the subscription's own login…", "sends to the install guide…", "guides the free local setup…", "offers to sign in again…", "forgets a pending login…", "keeps a subscription chosen while the local model was still downloading", "ignores a download started before choosing again", "checks the computer again when the first check failed", "can be shown again from the settings".
+- **A0c.** Solo cuenta como sesión iniciada la de una suscripción, no una clave de API ni una cuenta de Console, y una comprobación colgada se abandona a los 10 s. Tests: "only_a_subscription_login_counts_as_signed_in", "a_status_command_that_hangs_is_given_up"; real: "real_accounts_are_detected" (ignorado).
+- **A0d.** El login real en una ventana de consola, con el navegador. A mano.
+- **A1.** Sin modelo guardado se elige el modelo local gratuito, y Claude y Codex solo aparecen si están instalados. Test de frontend: "picks the free local model when none is chosen…".
 - **A2.** Sin ningún modelo aparece el asistente, no se pregunta a nadie y, cuando hay modelo, la selección pendiente se explica con su pista de ventana. Test de frontend: "shows the assistant when no model works…".
 - **A3.** Con Ollama cerrado se conserva el modelo elegido. Test de frontend: "keeps a chosen Ollama model while Ollama is closed".
 - **A4.** El modelo recomendado depende de la RAM. Test: "the_recommended_model_fits_the_memory".
@@ -56,7 +60,7 @@ Los datos de `src-tauri/tests/fixtures` son salidas reales de `claude -p`, `code
 - **R1.** Los botones aparecen bajo la última respuesta, mandan la instrucción completa y muestran solo su nombre; "Otro significado" solo con textos cortos. Test de frontend: "offers simpler and more technical versions…".
 
 ### 2 · Precarga de Ollama
-- **O1.** Elegir un modelo local lo precarga. Test de frontend: "picks the free local model on first run…".
+- **O1.** Elegir un modelo local lo precarga. Test de frontend: "picks the free local model when none is chosen…".
 - **O2.** "Cargando el modelo en memoria…" solo si el modelo no está cargado. Test de frontend: "says the local model is loading, and only then"; Rust: "a_loaded_model_is_recognised_in_api_ps".
 - **O3.** La precarga deja el modelo en memoria. Test ignorado: "real_ollama_answers".
 

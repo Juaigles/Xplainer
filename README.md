@@ -40,14 +40,14 @@ Xplainer stays out of the way in the tray. Select the text, press <kbd>Alt</kbd>
 - **Save it as a note.** Export the conversation as a Markdown file to any folder, such as an Obsidian vault.
 - **Searchable history.** Conversations are kept on your computer, searchable without caring about accents or case, and you can pick one up where you left it.
 - **Your models, no API bills.** Use Claude or ChatGPT through the subscription you already have, or a free model that runs on your computer with Ollama.
-- **Guided first run.** On a computer without any model, a short assistant installs Ollama and downloads a model sized for your RAM. No terminal or account needed.
+- **Guided first run.** The first time, Xplainer asks which AI to use and shows what each one still needs: sign in to Claude or ChatGPT with their own login window, or install Ollama and download a free model sized for your RAM. From then on it just uses your choice; change it in ⚙ → *Elegir otra IA*.
 
 ## Install
 
 1. Download `Xplainer_0.2.0_x64-setup.exe` from the [latest release](https://github.com/Juaigles/Xplainer/releases/latest).
 2. Run it. It installs for your user only, without admin rights.
 3. The installer is not code-signed yet, so Windows SmartScreen warns you the first time: click **More info → Run anyway**.
-4. Xplainer starts in the system tray. Select some text anywhere and press <kbd>Alt</kbd>+<kbd>X</kbd>.
+4. Xplainer starts in the system tray. Select some text anywhere and press <kbd>Alt</kbd>+<kbd>X</kbd>. The first time, choose which AI explains.
 
 To start it with Windows, right-click the tray icon and tick **Iniciar con Windows**. It is off by default. To uninstall it, use **Settings → Apps** in Windows.
 

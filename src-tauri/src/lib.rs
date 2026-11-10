@@ -64,6 +64,7 @@ struct Selection {
 
 /// Hides the console window that Windows would open for a child process.
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
 const OLLAMA_URL: &str = "http://127.0.0.1:11434";
 /// How long a local model stays in memory after its last use. Ollama's default is 5 minutes,
 /// and reloading a big model on a CPU takes about a minute.
@@ -680,6 +681,98 @@ fn start_ollama() -> Result<(), String> {
     Command::new(app).spawn().map(|_| ()).map_err(|error| format!("No se pudo abrir Ollama: {error}"))
 }
 
+/// Subscriptions signed in, so they answer with the user's plan: "claude", "codex".
+#[tauri::command]
+async fn check_accounts() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let mut claude = Command::new("claude");
+        // As when asking: without the API keys, so the status is the subscription's.
+        claude.args(["auth", "status", "--json"]).env_remove("ANTHROPIC_API_KEY").env_remove("ANTHROPIC_AUTH_TOKEN");
+        let mut codex = Command::new("cmd");
+        codex.args(["/d", "/c", "codex", "login", "status"]).env_remove("CODEX_API_KEY");
+        // At the same time: each may wait on the network to refresh its login.
+        let timeout = Duration::from_secs(10);
+        let claude = thread::spawn(move || status_output(claude, timeout));
+        let codex = status_output(codex, timeout);
+        let claude = claude.join().ok().flatten();
+        let mut signed_in = Vec::new();
+        if claude.is_some_and(|output| claude_uses_subscription(&output.stdout)) {
+            signed_in.push("claude".to_string());
+        }
+        if codex.is_some_and(|output| output.status.success() && codex_uses_subscription(&output.stdout, &output.stderr)) {
+            signed_in.push("codex".to_string());
+        }
+        signed_in
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// Runs a login status command, or gives up after `timeout` (a stalled network, say): otherwise
+/// the first-run choice would stay "checking" forever. Its output is a few lines, well within
+/// the pipe buffer, so waiting before reading cannot block the command.
+fn status_output(mut command: Command, timeout: Duration) -> Option<std::process::Output> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + timeout;
+    while child.try_wait().ok()?.is_none() {
+        if Instant::now() > deadline {
+            kill_tree(&mut child);
+            return None;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    child.wait_with_output().ok()
+}
+
+/// `claude auth status --json`: signed in with a Claude plan ("claude.ai"), not with an
+/// Anthropic Console account, which bills the API.
+fn claude_uses_subscription(stdout: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(stdout)
+        .is_ok_and(|status| status["loggedIn"] == true && status["authMethod"] == "claude.ai")
+}
+
+/// `codex login status` prints "Logged in using ChatGPT" (on stderr) or "... an API key", which
+/// bills the API.
+fn codex_uses_subscription(stdout: &[u8], stderr: &[u8]) -> bool {
+    [stdout, stderr].iter().any(|output| String::from_utf8_lossy(output).contains("using ChatGPT"))
+}
+
+/// Opens a console window with the CLI's own login, which continues in the browser. Xplainer
+/// never sees the account: the CLI keeps it. `|| pause` keeps the window open only on an error.
+#[tauri::command]
+fn sign_in(cli: String) -> Result<(), String> {
+    let login: &[&str] = match cli.as_str() {
+        "claude" => &["claude", "auth", "login", "--claudeai"],
+        "codex" => &["codex", "login"],
+        _ => return Err(format!("No sé iniciar sesión en «{cli}».")),
+    };
+    Command::new("cmd")
+        .args(["/d", "/c"])
+        .args(login)
+        .args(["||", "pause"])
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("No se pudo abrir el inicio de sesión: {error}"))
+}
+
+/// Opens the official install guide of a subscription CLI.
+#[tauri::command]
+fn open_install_page(cli: String) -> Result<(), String> {
+    let url = match cli.as_str() {
+        "claude" => "https://code.claude.com/docs/en/setup",
+        "codex" => "https://developers.openai.com/codex/cli",
+        _ => return Err(format!("No conozco «{cli}».")),
+    };
+    Command::new("explorer").arg(url).spawn().map(|_| ()).map_err(|error| error.to_string())
+}
+
 /// Downloads a model into Ollama, reporting progress (bytes done and total) as it goes.
 #[tauri::command]
 async fn pull_ollama_model(model: String, on_progress: Channel<Value>) -> Result<(), String> {
@@ -1078,6 +1171,9 @@ pub fn run() {
             ask_codex,
             ask_ollama,
             check_setup,
+            check_accounts,
+            sign_in,
+            open_install_page,
             open_ollama_download,
             start_ollama,
             pull_ollama_model,

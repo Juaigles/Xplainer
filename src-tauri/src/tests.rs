@@ -429,3 +429,39 @@ fn real_ollama_answers() {
     assert!(answer.is_ok_and(|text| text.contains("TCP")));
     assert!(preload(&model).is_ok() && is_loaded(&model), "preload leaves the model in memory");
 }
+
+#[test]
+fn only_a_subscription_login_counts_as_signed_in() {
+    let claude = |json: &str| claude_uses_subscription(json.as_bytes());
+    assert!(claude(r#"{"loggedIn": true, "authMethod": "claude.ai", "subscriptionType": "pro"}"#));
+    assert!(!claude(r#"{"loggedIn": false}"#));
+    assert!(!claude(r#"{"loggedIn": true, "authMethod": "console"}"#), "a Console login bills the API");
+    assert!(!claude("Not logged in"), "anything but the JSON status is not signed in");
+
+    assert!(codex_uses_subscription(b"", b"Logged in using ChatGPT\r\n"));
+    assert!(!codex_uses_subscription(b"Logged in using an API key - sk-...\r\n", b""));
+    assert!(!codex_uses_subscription(b"", b"Not logged in\r\n"));
+}
+
+/// The real `check_accounts` on this computer: prints which subscriptions are signed in.
+#[test]
+#[ignore]
+fn real_accounts_are_detected() {
+    let accounts = tauri::async_runtime::block_on(check_accounts());
+    println!("{accounts:?}");
+    assert!(accounts.is_ok());
+}
+
+#[test]
+fn a_status_command_that_hangs_is_given_up() {
+    let mut slow = Command::new("ping");
+    slow.args(["-n", "30", "127.0.0.1"]);
+    let started = Instant::now();
+    assert!(status_output(slow, Duration::from_millis(500)).is_none());
+    assert!(started.elapsed() < Duration::from_secs(5));
+
+    let mut quick = Command::new("cmd");
+    quick.args(["/d", "/c", "echo", "Logged in using ChatGPT"]);
+    let output = status_output(quick, Duration::from_secs(10)).expect("a quick command finishes");
+    assert!(codex_uses_subscription(&output.stdout, &output.stderr));
+}

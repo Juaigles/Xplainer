@@ -10,7 +10,7 @@ Código, identificadores y commits en inglés; commits de una línea `tipo(xplai
   - Atajo global y captura de la selección (`explain_selection`, `capture_selection`).
   - Registro de peticiones y cancelación (`Answers`).
   - Proveedores: `ask_claude_code`, `ask_codex`, `ask_ollama`.
-  - Asistente de primera vez: `check_setup`, `open_ollama_download`, `start_ollama`, `pull_ollama_model`.
+  - Primera vez: `check_setup`, `check_accounts`, `sign_in`, `open_install_page`, `open_ollama_download`, `start_ollama`, `pull_ollama_model`.
   - Precarga de Ollama: `preload_ollama`, `ollama_loaded`.
   - Alt+X dentro del recuadro (`popup_is_foreground`) emite `explain-deeper` en vez de `explain`.
   - Recorte con OCR: `snip_screen`, `recognize_text`, `rows`, `explain_snip`.
@@ -65,8 +65,12 @@ Código, identificadores y commits en inglés; commits de una línea `tipo(xplai
 - Los errores de arranque se muestran con `MessageBoxW`: la versión final no tiene consola.
 - Las respuestas se pintan como texto plano (Vue escapa el HTML). No renderizar Markdown sin sanitizarlo.
 
-### Asistente de primera vez
-- Aparece solo si no hay ningún modelo utilizable.
+### Primera vez: elegir la IA
+- La primera vez (sin `xplainer.onboarded` en `localStorage`) el recuadro pregunta con qué IA explicar: Claude, ChatGPT (Codex) o gratis con Ollama. Hasta elegir no se pregunta ni se precarga nada. Se puede volver a abrir en Ajustes → "Elegir otra IA".
+- "Vincular" es el login del propio CLI (`claude auth login --claudeai`, `codex login`) en una consola propia (`CREATE_NEW_CONSOLE`): Xplainer nunca ve la cuenta. `|| pause` deja la ventana abierta solo si falla.
+- Sesión detectada con `claude auth status --json` (`loggedIn` y `authMethod == "claude.ai"`) y `codex login status` ("Logged in using ChatGPT", en stderr). Una cuenta de Console o una clave de API cobraría la API, así que no cuentan. Cada comprobación se abandona a los 10 s: `claude` puede esperar a la red para renovar el login.
+- Tras pulsar "Iniciar sesión" se comprueba cada 3 s; al detectarla se elige sola. Elegir otra cosa olvida el login pendiente, y una descarga de Ollama empezada antes de otra elección no la pisa (`choiceRound`).
+- Sin ningún modelo utilizable, fuera de la primera vez, aparece el asistente de Ollama.
 - Recomienda `qwen3:4b-instruct` (2,5 GB) con 10 GB de RAM o más, y `qwen3:1.7b` (1,4 GB) con menos.
 - Abre la descarga oficial de Ollama en el navegador; la app nunca descarga ni ejecuta instaladores.
 - La selección que había pendiente se explica sola al terminar.

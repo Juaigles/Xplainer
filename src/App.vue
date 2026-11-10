@@ -94,6 +94,7 @@ const SUBSCRIPTION_MODELS: ModelOption[] = [
   { id: "codex", label: "Codex GPT-5.6 Luna · suscripción", provider: "codex", model: "gpt-5.6-luna" },
 ];
 const STORAGE_KEY = "xplainer.model";
+const ONBOARDED_KEY = "xplainer.onboarded";
 const NOTES_FOLDER_KEY = "xplainer.notesFolder";
 const HISTORY_ENABLED_KEY = "xplainer.historyEnabled";
 const HISTORY_EXCLUDED_KEY = "xplainer.historyExcluded";
@@ -152,6 +153,13 @@ interface Setup {
 
 const setup = ref<Setup | null>(null);
 const pull = ref<{ completed: number; total: number } | null>(null);
+// The first time, the user chooses the AI; from then on Xplainer just uses it.
+const onboarding = ref(stored(ONBOARDED_KEY, "") !== "true");
+/** Subscriptions signed in (`check_accounts`); null until checked. */
+const accounts = ref<string[] | null>(null);
+/** The subscription whose login window was opened: chosen by itself once signed in. */
+const signingIn = ref<string | null>(null);
+const localOpen = ref(false);
 
 const models = computed<ModelOption[]>(() => [
   // Claude and Codex only where they are installed; a friend without them would only get errors.
@@ -213,6 +221,7 @@ async function refreshSetup() {
     return; // Keep what we knew.
   }
   setup.value = found;
+  if (onboarding.value) return; // The user is choosing.
   // Choose a model that works here, free ones first: on first run, or when the chosen one is gone
   // for good (CLI uninstalled, Ollama model deleted). Ollama merely closed keeps the choice, so it
   // works again once Ollama starts instead of silently switching to a subscription.
@@ -230,6 +239,122 @@ const setupStep = computed(() => {
   if (setup.value?.ollama_running) return "download";
   return setup.value?.ollama_installed ? "start" : "install";
 });
+// Ready to explain: a model chosen and usable.
+const ready = computed(() => !onboarding.value && !needsSetup.value);
+// The steps to get a free local model: during the first run, when asked for or when nothing else works.
+const showLocalSetup = computed(() => setup.value !== null && (needsSetup.value || (onboarding.value && localOpen.value)));
+
+/** One way to explain in the first-run choice, and what it still needs. */
+interface Choice {
+  id: string;
+  name: string;
+  detail: string;
+  state: "ready" | "sign-in" | "install" | "checking" | "local-setup";
+}
+
+const choices = computed<Choice[]>(() => {
+  const subscription = (cli: string, name: string, plan: string, tool: string): Choice => {
+    if (!setup.value) return { id: cli, name, detail: "Comprobando tu equipo…", state: "checking" };
+    if (!setup.value.clis.includes(cli)) {
+      return { id: cli, name, detail: `Con tu suscripción de ${plan}. Necesita ${tool} instalado.`, state: "install" };
+    }
+    if (accounts.value === null) return { id: cli, name, detail: "Comprobando la sesión…", state: "checking" };
+    return accounts.value.includes(cli)
+      ? { id: cli, name, detail: `Con tu suscripción de ${plan}: sesión iniciada.`, state: "ready" }
+      : { id: cli, name, detail: `${tool} está instalado; falta iniciar sesión con tu cuenta.`, state: "sign-in" };
+  };
+  const local = localModel();
+  return [
+    subscription("claude", "Claude", "Claude", "Claude Code"),
+    subscription("codex", "ChatGPT", "ChatGPT", "Codex"),
+    local
+      ? { id: local.id, name: "Gratis, en tu ordenador", detail: `Con Ollama, sin cuenta ni internet: ${local.model}.`, state: "ready" }
+      : { id: "ollama", name: "Gratis, en tu ordenador", detail: "Con Ollama, sin cuenta ni internet. Te ayudo a instalarlo.", state: "local-setup" },
+  ];
+});
+
+/** The local model offered first: the recommended one if it is there. */
+function localModel(): ModelOption | undefined {
+  const local = models.value.filter(isLocalOllama);
+  return local.find((option) => option.model === setup.value?.recommended_model) ?? local[0];
+}
+
+let checkingAccounts = false;
+// Bumped by every choice: a download that started before it must not override it.
+let choiceRound = 0;
+
+async function checkAccounts() {
+  if (checkingAccounts) return;
+  checkingAccounts = true;
+  try {
+    accounts.value = await invoke<string[]>("check_accounts");
+  } catch {
+    accounts.value ??= []; // Shown as not signed in: signing in again is harmless.
+  } finally {
+    checkingAccounts = false;
+  }
+  const cli = signingIn.value;
+  if (cli && onboarding.value && accounts.value.includes(cli)) finishOnboarding(cli);
+}
+
+function finishOnboarding(id: string) {
+  choiceRound++;
+  selectedId.value = id;
+  onboarding.value = false;
+  signingIn.value = null;
+  localOpen.value = false;
+  store(ONBOARDED_KEY, "true");
+}
+
+/** From the settings: choose the AI again, as on the first run. */
+function chooseAgain() {
+  choiceRound++;
+  onboarding.value = true;
+  accounts.value = null;
+  signingIn.value = null;
+  view.value = "chat";
+  void refreshSetup();
+  void checkAccounts();
+}
+
+async function useChoice(choice: Choice) {
+  error.value = "";
+  // Choosing anything else forgets a login still pending: it must not take over once it finishes.
+  signingIn.value = null;
+  // Opening the local setup again is not another choice: its download carries on.
+  if (choice.state !== "local-setup") choiceRound++;
+  try {
+    if (choice.state === "ready") {
+      finishOnboarding(choice.id);
+    } else if (choice.state === "sign-in") {
+      signingIn.value = choice.id;
+      try {
+        await invoke("sign_in", { cli: choice.id });
+      } catch (e) {
+        if (signingIn.value === choice.id) signingIn.value = null;
+        throw e;
+      }
+      if (signingIn.value === choice.id) keepChecking(); // Unless something else was chosen meanwhile.
+    } else if (choice.state === "install") {
+      await invoke("open_install_page", { cli: choice.id });
+      keepChecking();
+    } else if (choice.state === "local-setup") {
+      localOpen.value = true;
+      if (!setup.value) await refreshSetup(); // The first check failed: the steps depend on it.
+      if (!setup.value) error.value = "No he podido comprobar qué hay instalado en tu equipo. Inténtalo de nuevo.";
+    }
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+const CHOICE_ACTIONS: Record<Choice["state"], string> = {
+  ready: "Usar",
+  "sign-in": "Iniciar sesión",
+  install: "Cómo instalarlo",
+  checking: "…",
+  "local-setup": "Configurar",
+};
 
 const gigabytes = (bytes: number) => (bytes / 1e9).toFixed(1).replace(".", ",");
 const pullPercent = computed(() =>
@@ -243,20 +368,25 @@ const pullText = computed(() =>
 
 let setupPoll: ReturnType<typeof setInterval> | undefined;
 
-/** After the user goes to install or open Ollama, notice it by ourselves (for 10 minutes). */
-function watchForOllama() {
+/** After the user goes to install, open or sign in to something, notice it by ourselves (for 10 minutes). */
+function keepChecking() {
   clearInterval(setupPoll);
   const until = Date.now() + 10 * 60_000;
   setupPoll = setInterval(() => {
-    if (!needsSetup.value || Date.now() > until) clearInterval(setupPoll);
-    else if (!pull.value) void refreshSetup();
+    if (ready.value || Date.now() > until) {
+      clearInterval(setupPoll);
+      signingIn.value = null; // Given up waiting: the button offers to sign in again.
+      return;
+    }
+    if (!pull.value) void refreshSetup();
+    if (onboarding.value) void checkAccounts();
   }, 3000);
 }
 
 async function openOllamaDownload() {
   try {
     await invoke("open_ollama_download");
-    watchForOllama();
+    keepChecking();
   } catch (e) {
     error.value = String(e);
   }
@@ -268,7 +398,7 @@ async function openOllama() {
   } catch (e) {
     error.value = String(e); // They may still open it from the Start menu: keep watching.
   }
-  watchForOllama();
+  keepChecking();
 }
 
 async function downloadModel() {
@@ -280,9 +410,14 @@ async function downloadModel() {
   };
   pull.value = { completed: 0, total: 0 };
   error.value = "";
+  const round = choiceRound;
   try {
     await invoke("pull_ollama_model", { model, onProgress });
-    selectedId.value = `ollama:${model}`;
+    // Unless another AI was chosen during the download, or the choice was opened again: keep that.
+    if (round === choiceRound) {
+      if (onboarding.value) finishOnboarding(`ollama:${model}`);
+      else selectedId.value = `ollama:${model}`;
+    }
     await refreshSetup();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -413,7 +548,7 @@ async function ask(content: string, shown?: string) {
     option !== undefined && isLocalOllama(option) && !(await invoke<boolean>("ollama_loaded", { model: option.model }));
   if (started !== generation || streaming.value) return;
   if (!option) {
-    if (!needsSetup.value) error.value = UNAVAILABLE; // Otherwise the assistant explains what to do.
+    if (ready.value) error.value = UNAVAILABLE; // Otherwise the assistant explains what to do.
     return;
   }
   const conversation = history;
@@ -471,7 +606,7 @@ function start(selection: Selection) {
   conversationId = Date.now();
   source = selection.window_title;
   term.value = selection.text.trim();
-  if (needsSetup.value) {
+  if (!ready.value) {
     void refreshSetup(); // Ollama may have been installed or opened since the last check.
   } else if (term.value) {
     void ask(firstPrompt(term.value, windowHint(source)));
@@ -670,8 +805,8 @@ function onBodyMouseup() {
 }
 
 // Setup just finished: explain what was selected meanwhile.
-watch(needsSetup, (now, before) => {
-  if (before && !now && term.value && chat.value.length === 0) {
+watch(ready, (now, before) => {
+  if (!before && now && term.value && chat.value.length === 0) {
     void ask(firstPrompt(term.value, windowHint(source)));
   }
 });
@@ -725,6 +860,7 @@ onMounted(async () => {
     error.value = event.payload;
   });
   void refreshSetup();
+  if (onboarding.value) void checkAccounts();
   void loadHistory();
 });
 
@@ -743,7 +879,7 @@ onUnmounted(() => {
   <main class="popup">
     <header data-tauri-drag-region>
       <span class="term" data-tauri-drag-region :title="term">{{ term || "Xplainer" }}</span>
-      <select v-model="selectedId" class="model" title="Modelo que explica" @focus="refreshSetup">
+      <select v-if="!onboarding" v-model="selectedId" class="model" title="Modelo que explica" @focus="refreshSetup">
         <option v-for="option in models" :key="option.id" :value="option.id">{{ option.label }}</option>
       </select>
       <button class="icon" :class="{ active: view === 'history' }" title="Historial" @click="toggleView('history')">
@@ -773,6 +909,9 @@ onUnmounted(() => {
     </section>
 
     <section v-if="view === 'settings'" class="panel">
+      <button class="outline" @click="chooseAgain">Elegir otra IA</button>
+      <p class="notice">Vuelve a mostrar las opciones del primer arranque: Claude, ChatGPT o un modelo gratuito.</p>
+
       <label>
         Carpeta de notas
         <input v-model.trim="notesFolder" placeholder="C:\Users\…\MiVault\Xplainer" />
@@ -816,8 +955,34 @@ onUnmounted(() => {
         Explicar «{{ picked.text }}»
       </button>
 
-      <div v-if="needsSetup && setup" class="setup">
-        <p v-if="setupStep !== 'start'">
+      <div v-if="onboarding" class="setup">
+        <p>
+          ¡Hola! Elige con qué IA quieres que Xplainer te explique las cosas. Se acordará de tu elección; puedes
+          cambiarla cuando quieras en ⚙.
+        </p>
+        <ul class="choices">
+          <li v-for="choice in choices" :key="choice.id">
+            <span>
+              <strong>{{ choice.name }}</strong>
+              <span class="notice">{{ choice.detail }}</span>
+            </span>
+            <button
+              :class="{ primary: choice.state === 'ready' }"
+              :disabled="choice.state === 'checking'"
+              @click="useChoice(choice)"
+            >
+              <!-- The login window may have been closed: clicking again opens a new one. -->
+              {{ signingIn === choice.id ? "Reintentar" : CHOICE_ACTIONS[choice.state] }}
+            </button>
+          </li>
+        </ul>
+        <p v-if="signingIn" class="notice">
+          Termina de iniciar sesión en la ventana que se ha abierto y en el navegador. Xplainer lo notará solo. Si
+          cerraste la ventana, pulsa «Reintentar».
+        </p>
+      </div>
+      <div v-if="showLocalSetup && setup" class="setup">
+        <p v-if="setupStep !== 'start' && !onboarding">
           Para explicar, Xplainer necesita un modelo de IA. Puede usar uno gratuito que funciona en tu
           ordenador, con Ollama.
         </p>
@@ -841,7 +1006,7 @@ onUnmounted(() => {
           </template>
         </template>
       </div>
-      <p v-else-if="!term" class="notice">
+      <p v-else-if="!term && !onboarding" class="notice">
         Selecciona un texto en cualquier app y pulsa Alt+X, o escribe abajo qué quieres que te explique. Si el texto no
         se puede seleccionar (en una imagen, un vídeo…), pulsa Win+Shift+Z y recórtalo.
       </p>
@@ -876,10 +1041,10 @@ onUnmounted(() => {
       <input
         ref="inputEl"
         v-model="input"
-        :disabled="needsSetup"
+        :disabled="!ready"
         :placeholder="term ? 'Pregunta lo que no entiendas…' : '¿Qué quieres que te explique?'"
       />
-      <button :disabled="!input.trim() || streaming || needsSetup">Enviar</button>
+      <button :disabled="!input.trim() || streaming || !ready">Enviar</button>
     </form>
   </main>
 </template>
@@ -1199,6 +1364,58 @@ header {
   color: var(--on-accent);
   font: inherit;
   cursor: pointer;
+}
+
+.choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.choices li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.choices li > span {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+.setup .choices button,
+.outline {
+  flex-shrink: 0;
+  align-self: center;
+  padding: 6px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.setup .choices button.primary {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.setup .choices button:disabled {
+  border-color: var(--border);
+  color: var(--muted);
+  cursor: default;
+}
+
+.outline {
+  align-self: flex-start;
 }
 
 .progress {

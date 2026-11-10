@@ -21,7 +21,13 @@ interface Backend {
     recommended_model: string;
     recommended_size: string;
   };
+  /** Subscriptions signed in, as `check_accounts` reports them. */
+  accounts: string[];
   loaded: boolean;
+  /** What `pull_ollama_model` waits for; resolved at once when unset. */
+  pull?: Promise<null>;
+  /** What `sign_in` waits for; resolved at once when unset. */
+  signIn?: Promise<null>;
   history: string | Error;
   answer: (prompt: string) => Promise<string>;
   calls: Call[];
@@ -51,6 +57,7 @@ const calls = (cmd: string) => backend.calls.filter((call) => call.cmd === cmd);
 
 beforeEach(() => {
   localStorage.clear();
+  localStorage.setItem("xplainer.onboarded", "true"); // The first-run choice has its own tests.
   // jsdom has no layout: scrolling the conversation is a no-op here.
   Element.prototype.scrollTo = () => {};
   backend = {
@@ -62,6 +69,7 @@ beforeEach(() => {
       recommended_model: "qwen3:4b-instruct",
       recommended_size: "2,5 GB",
     },
+    accounts: ["claude"],
     loaded: true,
     history: "[]",
     answer: async (prompt) => answerTo(prompt),
@@ -74,7 +82,14 @@ beforeEach(() => {
       backend.calls.push({ cmd, args });
       switch (cmd) {
         case "check_setup":
+          if (!backend.setup) throw "check_setup failed";
           return structuredClone(backend.setup);
+        case "check_accounts":
+          return [...backend.accounts];
+        case "pull_ollama_model":
+          return backend.pull ?? null;
+        case "sign_in":
+          return backend.signIn ?? null;
         case "ollama_loaded":
           return backend.loaded;
         case "read_history":
@@ -132,7 +147,7 @@ const buttonNamed = (app: VueWrapper, label: string) =>
   app.findAll("button").find((button) => button.text() === label)!;
 
 describe("models and first run", () => {
-  it("picks the free local model on first run, preloads it and lists Claude only when installed", async () => {
+  it("picks the free local model when none is chosen, preloads it and lists Claude only when installed", async () => {
     const app = await open();
     const options = app.findAll("select.model option").map((option) => option.attributes("value"));
     expect(options).toEqual(["claude", "ollama:qwen3:4b-instruct"]);
@@ -162,6 +177,171 @@ describe("models and first run", () => {
     const app = await open();
     expect(localStorage.getItem("xplainer.model")).toBe("ollama:qwen3:4b-instruct");
     expect(app.find(".setup").exists()).toBe(false); // Claude is still usable.
+  });
+});
+
+describe("first-run choice", () => {
+  const choice = (app: VueWrapper, name: string) =>
+    app.findAll(".choices li").find((item) => item.find("strong").text() === name)!;
+
+  beforeEach(() => localStorage.removeItem("xplainer.onboarded"));
+  afterEach(() => vi.useRealTimers());
+
+  it("asks which AI to use first, then explains the pending selection and remembers it", async () => {
+    backend.setup = { ...backend.setup, clis: ["claude", "codex"] };
+    const app = await open();
+    await explain("handshake", "Redes");
+    expect(calls("ask_claude_code")).toHaveLength(0);
+    expect(calls("preload_ollama")).toHaveLength(0); // Nothing loads before the user chooses.
+    expect(app.find("select.model").exists()).toBe(false);
+    expect(app.find("form input").attributes("disabled")).toBeDefined();
+    expect(app.findAll(".choices li button").map((button) => button.text())).toEqual([
+      "Usar",
+      "Iniciar sesión",
+      "Usar",
+    ]);
+    expect(choice(app, "Gratis, en tu ordenador").text()).toContain("qwen3:4b-instruct");
+
+    await choice(app, "Claude").find("button").trigger("click");
+    await settle();
+    expect(lastPrompt()).toContain("<seleccion>\nhandshake\n</seleccion>");
+    expect(localStorage.getItem("xplainer.model")).toBe("claude");
+    expect(localStorage.getItem("xplainer.onboarded")).toBe("true");
+
+    wrapper!.unmount();
+    const again = await open();
+    expect(again.find(".choices").exists()).toBe(false);
+  });
+
+  it("opens the subscription's own login and uses it once signed in", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    backend.setup = { ...backend.setup, clis: ["claude", "codex"] };
+    const app = await open();
+    await choice(app, "ChatGPT").find("button").trigger("click");
+    await flushPromises();
+    expect(calls("sign_in").map((call) => call.args.cli)).toEqual(["codex"]);
+    expect(choice(app, "ChatGPT").find("button").text()).toBe("Reintentar"); // If the login window was closed.
+
+    backend.accounts = ["claude", "codex"];
+    await vi.advanceTimersByTimeAsync(3000);
+    await flushPromises();
+    expect(app.find(".choices").exists()).toBe(false);
+    expect(localStorage.getItem("xplainer.model")).toBe("codex");
+  });
+
+  it("sends to the install guide what is not installed", async () => {
+    backend.setup = { ...backend.setup, clis: [] };
+    const app = await open();
+    expect(choice(app, "Claude").find("button").text()).toBe("Cómo instalarlo");
+    await choice(app, "Claude").find("button").trigger("click");
+    expect(calls("open_install_page").map((call) => call.args.cli)).toEqual(["claude"]);
+  });
+
+  it("guides the free local setup and finishes when the model is downloaded", async () => {
+    backend.setup = { ...backend.setup, ollama_models: [], clis: [] };
+    const app = await open();
+    expect(app.find(".progress").exists()).toBe(false);
+    await choice(app, "Gratis, en tu ordenador").find("button").trigger("click");
+    expect(app.text()).toContain("Descarga el modelo recomendado para tu equipo: qwen3:4b-instruct");
+
+    backend.setup = { ...backend.setup, ollama_models: ["qwen3:4b-instruct"] };
+    await buttonNamed(app, "Descargar modelo").trigger("click");
+    await flushPromises();
+    expect(calls("pull_ollama_model").map((call) => call.args.model)).toEqual(["qwen3:4b-instruct"]);
+    expect(app.find(".choices").exists()).toBe(false);
+    expect(localStorage.getItem("xplainer.model")).toBe("ollama:qwen3:4b-instruct");
+  });
+
+  it("keeps a subscription chosen while the local model was still downloading", async () => {
+    let finish: () => void = () => {};
+    backend.pull = new Promise((resolve) => (finish = () => resolve(null)));
+    backend.setup = { ...backend.setup, ollama_models: [] };
+    const app = await open();
+    await choice(app, "Gratis, en tu ordenador").find("button").trigger("click");
+    await buttonNamed(app, "Descargar modelo").trigger("click");
+    await choice(app, "Claude").find("button").trigger("click");
+    finish();
+    await flushPromises();
+    expect(localStorage.getItem("xplainer.model")).toBe("claude");
+  });
+
+  it("offers to sign in again when it stops waiting for the login", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    backend.setup = { ...backend.setup, clis: ["claude", "codex"] };
+    const app = await open();
+    await choice(app, "ChatGPT").find("button").trigger("click");
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(10 * 60_000 + 3000);
+    expect(choice(app, "ChatGPT").find("button").text()).toBe("Iniciar sesión");
+    expect(app.find(".choices").exists()).toBe(true);
+  });
+
+  it("forgets a pending login when another option is chosen", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    backend.setup = { ...backend.setup, ollama_models: [], clis: ["claude", "codex"] };
+    const app = await open();
+    await choice(app, "ChatGPT").find("button").trigger("click");
+    await flushPromises();
+    await choice(app, "Gratis, en tu ordenador").find("button").trigger("click");
+    backend.accounts = ["claude", "codex"];
+    await vi.advanceTimersByTimeAsync(3000);
+    await flushPromises();
+    expect(app.find(".choices").exists()).toBe(true);
+    expect(localStorage.getItem("xplainer.model")).toBeNull();
+  });
+
+  it("ignores a login window that opened after another option was chosen", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    let opened: () => void = () => {};
+    backend.signIn = new Promise((resolve) => (opened = () => resolve(null)));
+    backend.setup = { ...backend.setup, ollama_models: [], clis: ["claude", "codex"] };
+    const app = await open();
+    await choice(app, "ChatGPT").find("button").trigger("click");
+    await choice(app, "Gratis, en tu ordenador").find("button").trigger("click");
+    opened();
+    backend.accounts = ["claude", "codex"];
+    await vi.advanceTimersByTimeAsync(3000);
+    await flushPromises();
+    expect(app.find(".choices").exists()).toBe(true);
+    expect(localStorage.getItem("xplainer.model")).toBeNull();
+  });
+
+  it("ignores a download started before choosing again", async () => {
+    let finish: () => void = () => {};
+    backend.pull = new Promise((resolve) => (finish = () => resolve(null)));
+    backend.setup = { ...backend.setup, ollama_models: [], clis: ["claude", "codex"] };
+    backend.accounts = ["claude", "codex"];
+    const app = await open();
+    await choice(app, "Gratis, en tu ordenador").find("button").trigger("click");
+    await buttonNamed(app, "Descargar modelo").trigger("click");
+    await choice(app, "Claude").find("button").trigger("click");
+    await app.find('header button[title="Ajustes"]').trigger("click");
+    await buttonNamed(app, "Elegir otra IA").trigger("click");
+    finish(); // Finishes while the user is choosing again.
+    await flushPromises();
+    expect(app.find(".choices").exists()).toBe(true);
+    expect(localStorage.getItem("xplainer.model")).toBe("claude");
+  });
+
+  it("checks the computer again when the first check failed", async () => {
+    const setup = backend.setup;
+    backend.setup = undefined as unknown as Backend["setup"]; // check_setup fails.
+    const app = await open();
+    // Not known yet: nothing to sign in to or install.
+    expect(choice(app, "Claude").find("button").attributes("disabled")).toBeDefined();
+    backend.setup = { ...setup, ollama_models: [] };
+    await choice(app, "Gratis, en tu ordenador").find("button").trigger("click");
+    await flushPromises();
+    expect(app.text()).toContain("Descarga el modelo recomendado");
+  });
+
+  it("can be shown again from the settings", async () => {
+    localStorage.setItem("xplainer.onboarded", "true");
+    const app = await open();
+    await app.find('header button[title="Ajustes"]').trigger("click");
+    await buttonNamed(app, "Elegir otra IA").trigger("click");
+    await flushPromises();
+    expect(app.find(".choices").exists()).toBe(true);
   });
 });
 
