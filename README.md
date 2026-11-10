@@ -1,84 +1,128 @@
+<div align="center">
+
+<img src="app-icon.svg" width="88" alt="Xplanator logo" />
+
 # Xplanator
 
-Selecciona un texto en cualquier app de Windows, pulsa **Alt+X** y aparece un recuadro con una explicación breve y didáctica del término. Puedes repreguntar escribiendo o pulsando una de las preguntas sugeridas.
+**Select any text on Windows, press <kbd>Alt</kbd>+<kbd>X</kbd>, and get a short, clear explanation, then keep asking.**
 
-Si el texto no se puede seleccionar (en una imagen, un vídeo, un PDF bloqueado), pulsa **Win+Shift+Z**, recorta la zona con la herramienta de recortes de Windows y Xplanator lee el texto con el OCR de Windows y lo explica.
+A tray app that turns any word, paragraph, piece of code or error message into a lesson, with your own AI subscription or a free local model.
 
-Hecho con Tauri v2 (Rust) + Vue 3 + TypeScript.
+[![Platform: Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4)](#install)
+[![Built with Tauri 2](https://img.shields.io/badge/built%20with-Tauri%202-24C8DB)](https://tauri.app)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-## Modelos
+[Install](#install) · [Features](#features) · [Models](#choose-a-model) · [Privacy](#privacy-and-security) · [Build from source](#build-from-source)
 
-Se eligen en el desplegable de la cabecera del recuadro, que recuerda la última elección y solo muestra los que funcionan en ese equipo. Ninguno cobra por uso:
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshot-dark.png" />
+  <img src="docs/screenshot-light.png" width="440" alt="The Xplanator popup explaining the word idempotente, with follow-up buttons and suggested questions" />
+</picture>
 
-- **Claude Haiku · suscripción**: tu plan de Claude a través de Claude Code (`claude -p`). Gasta de tus límites de uso. Necesita Claude Code instalado con el instalador nativo (`claude.exe` en el PATH; la instalación por npm no sirve) y con la sesión iniciada.
-- **Codex GPT-5.6 Luna · suscripción**: tu plan de ChatGPT a través de Codex (`codex exec`). Gasta de tus límites de Codex. La respuesta aparece entera al final, no poco a poco. Necesita Codex con la sesión de ChatGPT iniciada.
-- **Modelos de Ollama · gratis**: el desplegable lista los que tengas instalados (se refresca al abrirlo). Sin GPU dedicada, los modelos grandes van lentos; uno pequeño responde antes. Al elegir un modelo local en el desplegable, Xplanator lo carga en memoria en ese momento y lo mantiene 30 minutos desde su último uso (Ollama, por defecto, 5), para que no esperes a la carga al preguntar; mientras, ocupa RAM. Si aún se está cargando, el recuadro dice «Cargando el modelo en memoria…». Los modelos de la nube de Ollama (por ejemplo, los grandes de DeepSeek o Kimi, que no caben en un portátil) aparecen igual si los añades con `ollama pull` y has iniciado sesión en Ollama; su plan gratuito tiene límites.
+</div>
 
-## Requisitos
+> [!NOTE]
+> Explanations are written in **Spanish**. The interface is in Spanish too.
 
-- Node.js y Rust (`rustup`, toolchain `stable-msvc`).
-- Build Tools de Visual Studio con C++ y el SDK de Windows.
+## Why
 
-## Instalar
+Reading documentation, a paper or a code review, you hit a word you don't know. Searching for it means leaving what you were reading, opening a browser and wading through results written for someone else.
+
+Xplanator stays out of the way in the tray. Select the text, press <kbd>Alt</kbd>+<kbd>X</kbd>, and a small popup next to your cursor explains it at the right level, using the title of the window you were in to pick the right meaning.
+
+## Features
+
+- **Explains anything you can select.** It adapts the structure to what you selected: a term gets a definition, an everyday analogy and a common confusion; code is walked through step by step; an error gets its likely cause and how to check it.
+- **Text you can't select, too.** Press <kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd>, snip part of the screen (an image, a video, a locked PDF) and Xplanator reads it with the OCR built into Windows.
+- **Change the level in one click.** *Más simple*, *Más técnico* and *Otro significado* rephrase the last answer without typing.
+- **Go deeper without losing your place.** Select a word inside an answer to explain it as a new level. A trail (`TCP › handshake › SYN`) takes you back to any level.
+- **Suggested follow-ups.** Every answer ends with three questions you can ask with one click, or type your own.
+- **Save it as a note.** Export the conversation as a Markdown file to any folder, such as an Obsidian vault.
+- **Searchable history.** Conversations are kept on your computer, searchable without caring about accents or case, and you can pick one up where you left it.
+- **Your models, no API bills.** Use Claude or ChatGPT through the subscription you already have, or a free model that runs on your computer with Ollama.
+- **Guided first run.** On a computer without any model, a short assistant installs Ollama and downloads a model sized for your RAM. No terminal or account needed.
+
+## Install
+
+1. Download `Xplanator_0.2.0_x64-setup.exe` from the [latest release](https://github.com/Juaigles/Xplanator/releases/latest).
+2. Run it. It installs for your user only, without admin rights.
+3. The installer is not code-signed yet, so Windows SmartScreen warns you the first time: click **More info → Run anyway**.
+4. Xplanator starts in the system tray. Select some text anywhere and press <kbd>Alt</kbd>+<kbd>X</kbd>.
+
+To start it with Windows, right-click the tray icon and tick **Iniciar con Windows**. It is off by default. To uninstall it, use **Settings → Apps** in Windows.
+
+Xplanator does not update itself yet: to update, download the new installer and run it over the old version.
+
+## Choose a model
+
+Pick the model in the popup's dropdown. It only lists the ones that work on your computer and remembers your choice.
+
+| Model | Cost | What you need |
+| --- | --- | --- |
+| **Ollama models** (local) | Free | [Ollama](https://ollama.com) with any chat model. The first-run assistant sets it up for you. |
+| **Claude Haiku** | Your Claude plan's usage limits | [Claude Code](https://code.claude.com) installed with the native installer and signed in. |
+| **GPT-5.6 Luna** | Your ChatGPT plan's Codex limits | [Codex CLI](https://developers.openai.com/codex) signed in with your ChatGPT account. |
+
+Local models need no internet and no account, but without a dedicated GPU, big models are slow: the assistant recommends `qwen3:4b-instruct` (2.5 GB) with 10 GB of RAM or more, and `qwen3:1.7b` (1.4 GB) otherwise. Xplanator loads the chosen local model as soon as you pick it, so it is ready by the time you ask.
+
+## Shortcuts
+
+| Keys | Action |
+| --- | --- |
+| <kbd>Alt</kbd>+<kbd>X</kbd> | Explain the selected text. Inside the popup, explain the selected word one level deeper. |
+| <kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> | Snip part of the screen and explain the text in it. |
+| <kbd>Esc</kbd> | Hide the popup. |
+
+Launching Xplanator again from the Start menu just opens the popup of the copy already running. To quit, right-click the tray icon and choose **Salir**.
+
+## Privacy and security
+
+- **No API keys.** Xplanator never asks for or stores credentials. Claude and Codex run through their own command-line tools, signed in with your account; Xplanator removes API keys from their environment, so they always use your subscription instead of pay-per-use billing.
+- **Selected text is untrusted.** It may contain instructions written by someone else. Claude runs without tools, MCP servers or your personal settings; Codex runs read-only, without a shell, connectors or web search.
+- **History stays on your computer**, in `%APPDATA%\com.kiook.xplanator\history.json`. You can pause it, delete single entries or all of it, and list words that block saving when they appear in the source window's title. By default it skips password managers, banks and private browsing windows.
+- **No telemetry.** With a local Ollama model, nothing leaves your computer.
+
+## How it works
+
+1. A global shortcut waits for you to release the keys, simulates <kbd>Ctrl</kbd>+<kbd>C</kbd>, reads the clipboard and puts your previous clipboard text back.
+2. The popup sends the text and the source window's title to the chosen model with a teaching prompt, and streams the answer as it arrives.
+3. The conversation is kept as plain text, so you can switch models halfway through.
+
+The native side is Rust ([`src-tauri/src/lib.rs`](src-tauri/src/lib.rs)); the popup is Vue 3 and TypeScript ([`src/App.vue`](src/App.vue)). [`AGENTS.md`](AGENTS.md) records the design decisions and their reasons (in Spanish).
+
+## Build from source
+
+Requirements:
+
+- Windows 10 or 11
+- [Node.js](https://nodejs.org) 22 or later
+- [Rust](https://rustup.rs) with the `stable-msvc` toolchain
+- Visual Studio Build Tools with the C++ workload and the Windows SDK
 
 ```bash
 npm install
-npm run tauri build
+npm run tauri dev     # run in development
+npm run tauri build   # create the installer in src-tauri/target/release/bundle/nsis/
+npm run test:all      # frontend (Vitest) and native (cargo test) tests
 ```
 
-Genera el instalador en `src-tauri/target/release/bundle/nsis/Xplanator_0.2.0_x64-setup.exe`. Se instala para tu usuario, sin permisos de administrador, y queda en el menú Inicio. Como el instalador no está firmado, Windows SmartScreen avisa la primera vez: **Más información → Ejecutar de todas formas**.
+Close the installed Xplanator before running a development build: both use the same shortcuts. [`TESTING.md`](TESTING.md) lists the acceptance criteria, the test that covers each one, and the smoke test of the final executable.
 
-Para que arranque sola al iniciar sesión: clic derecho en el icono de la bandeja → **Iniciar con Windows**. Viene desactivado; tú decides. Para desinstalarla: Configuración de Windows → Aplicaciones.
+## Known limitations
 
-Xplanator es el nuevo nombre de Explicador. Windows las trata como apps distintas y las dos usan el mismo atajo, así que desinstala Explicador antes de instalar Xplanator.
+- Windows only.
+- While Xplanator runs, <kbd>Alt</kbd>+<kbd>X</kbd> no longer reaches other apps; in Word and Outlook it normally converts a Unicode code into its character.
+- In a terminal with nothing selected, the simulated <kbd>Ctrl</kbd>+<kbd>C</kbd> interrupts the running process.
+- Only plain text is restored to the clipboard: rich text comes back without formatting, and files or images copied before are lost.
+- The OCR can confuse similar characters (`l` and `I`) or drop lone symbols in code.
+- Codex always reads your global `~/.codex/AGENTS.md`; it has no option to skip it.
 
-## Usar
+## Contributing
 
-La app vive oculta, con un icono en la bandeja del sistema. Si la abres otra vez desde el menú Inicio, no arranca una segunda copia: abre el recuadro de la que ya está en marcha. Para salir: clic derecho en el icono → **Salir**.
+Issues and pull requests are welcome. For anything bigger than a fix, please open an issue first to talk it over. [`AGENTS.md`](AGENTS.md) explains how the code is organised and the decisions behind it, and `npm run test:all` should pass before a pull request.
 
-En el recuadro: **Esc** lo oculta y la cabecera sirve para arrastrarlo.
+## License
 
-Bajo cada respuesta, **Más simple** y **Más técnico** cambian el nivel de la explicación, y **Otro significado** (solo con palabras o expresiones cortas) pide la siguiente acepción.
+[MIT](LICENSE) © 2026 Jota Iglesias
 
-**Guardar nota** crea un `.md` con la conversación en tu carpeta de notas, por ejemplo una carpeta de tu vault de Obsidian. La carpeta se elige en **⚙ Ajustes** y tiene que existir. Nunca sobrescribe otra nota: si guardas otra vez tras repreguntar, actualiza la misma.
-
-**🕘 Historial** guarda cada conversación para buscarla (sin distinguir mayúsculas ni acentos) y retomarla. Se guarda solo en tu equipo, en `%APPDATA%\com.kiook.xplanator\history.json`, con las 500 más recientes. Como el texto puede venir de cualquier app, en **⚙ Ajustes** puedes pausarlo, borrarlo entero y editar la lista de palabras que, si aparecen en el título de la ventana de origen, impiden guardar (de serie: gestores de contraseñas, bancos y navegación privada). Cada entrada se borra con su ×.
-
-Para explicar una palabra de la respuesta, selecciónala y pulsa el botón **Explicar «…»** que aparece al lado, o Alt+X. Se abre como un nivel más, con un rastro bajo la cabecera (TCP › handshake › SYN) para volver a cualquier nivel anterior.
-
-## Compartirla con otra persona
-
-Basta con pasarle el instalador. Si en su equipo no hay ningún modelo (ni Ollama con modelos, ni Claude Code o Codex), el recuadro muestra un asistente de primera vez:
-
-1. **Instalar Ollama** (gratis): el botón abre su página oficial de descarga; al terminar, la app lo detecta sola. Si ya lo tiene pero está cerrado, un botón lo abre.
-2. **Descargar el modelo recomendado**, con barra de progreso: `qwen3:4b-instruct` (2,5 GB) con 10 GB de RAM o más, o `qwen3:1.7b` (1,4 GB) con menos.
-
-Si seleccionó un texto antes de configurarla, se explica solo al terminar. No necesita cuentas ni terminal. Claude y Codex solo aparecen si los tiene instalados con su propia cuenta: las suscripciones son personales.
-
-## Desarrollar
-
-```bash
-npm run tauri dev
-```
-
-Cierra antes la app instalada: las dos usan el mismo atajo. En desarrollo, "Iniciar con Windows" aparece desactivado; actívalo desde la app instalada.
-
-## Cómo funciona
-
-1. `src-tauri/src/lib.rs` registra el atajo global. Al pulsarlo, espera a que sueltes las teclas, simula Ctrl+C, lee el portapapeles y deja tu texto anterior como estaba. Con Win+Shift+Z abre la herramienta de recortes (`ms-screenclip:`), espera la imagen en el portapapeles y la lee con `Windows.Media.Ocr`.
-2. Envía al recuadro el texto y el título de la ventana de origen (pista para elegir el significado correcto).
-3. `src/App.vue` manda la pregunta a Rust con el prompt pedagógico y guarda el historial para las repreguntas, como texto, así que puedes cambiar de modelo a mitad de conversación.
-4. Rust habla con el modelo elegido: lanza `claude -p` o `codex exec` sin servidores MCP y sin guardar la sesión, o llama a Ollama en `http://127.0.0.1:11434`. Claude va sin herramientas, sin tu configuración ni tu `CLAUDE.md`; Codex, sin shell, sin conectores, sin tu configuración ni tus reglas y en modo solo lectura (el texto seleccionado puede traer instrucciones de terceros). A ninguno le llegan claves de API del entorno, para que siempre use tu suscripción. A las CLI les reenvía la conversación entera en cada repregunta.
-
-## Límites conocidos
-
-- Si la ruta de la carpeta del proyecto es muy larga (más de ~120 caracteres), el enlazador de Windows falla con `LNK1104`. Usa una carpeta corta o define `CARGO_TARGET_DIR`.
-- Mientras Xplanator está abierta, Alt+X deja de llegar a las demás apps; por ejemplo, en Word y Outlook ya no convierte un código Unicode en su carácter.
-- El OCR usa los idiomas de reconocimiento que Windows instala con tus idiomas de pantalla. Confunde a veces letras parecidas (l e I) y puede perder símbolos sueltos, como un `=` en código; el modelo suele entenderlo igual. Si no recortas nada en 30 segundos, el atajo se da por cancelado. El recorte se queda en el portapapeles, como con Win+Shift+S.
-- En una terminal sin texto seleccionado, Ctrl+C interrumpe el proceso en marcha. No uses el atajo ahí sin seleccionar algo.
-- VS Code copia la línea entera si no hay selección.
-- Solo se restaura texto plano. Si en el portapapeles tenías otra cosa (ficheros, una imagen) y usas el atajo con texto seleccionado, se pierde; y el texto con formato vuelve sin formato.
-- Si la app de origen tarda más de medio segundo en copiar (por ejemplo, un escritorio remoto), el recuadro sale vacío y la copia sustituye a lo que tenías en el portapapeles.
-- Codex carga siempre tu `AGENTS.md` global (`~/.codex/AGENTS.md`): no tiene una opción para desactivarlo sin tocar tu configuración.
-- Cancelar con un modelo de Ollama que aún se está cargando en memoria, o procesando un texto largo, no corta hasta que llega el primer trozo de respuesta; mientras, la siguiente pregunta a Ollama espera.
-- Solo funciona en Windows.
+Xplanator is an independent project, not affiliated with Anthropic, OpenAI or Ollama.
