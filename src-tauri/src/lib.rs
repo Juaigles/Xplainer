@@ -1011,7 +1011,7 @@ fn popup_is_foreground(app: &AppHandle) -> bool {
 /// The installed app has no console, so errors must be shown in a window.
 fn show_error(message: &str) {
     unsafe {
-        MessageBoxW(None, &HSTRING::from(message), w!("Xplanator"), MB_OK | MB_ICONERROR);
+        MessageBoxW(None, &HSTRING::from(message), w!("Xplainer"), MB_OK | MB_ICONERROR);
     }
 }
 
@@ -1122,7 +1122,7 @@ pub fn run() {
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip(format!(
-                    "Xplanator: selecciona un texto y pulsa {SHORTCUT_NAME}, o recórtalo con {SNIP_SHORTCUT_NAME}"
+                    "Xplainer: selecciona un texto y pulsa {SHORTCUT_NAME}, o recórtalo con {SNIP_SHORTCUT_NAME}"
                 ))
                 .menu(&menu)
                 .on_menu_event(move |app, event| match event.id.as_ref() {

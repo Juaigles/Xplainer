@@ -137,7 +137,7 @@ describe("models and first run", () => {
     const options = app.findAll("select.model option").map((option) => option.attributes("value"));
     expect(options).toEqual(["claude", "ollama:qwen3:4b-instruct"]);
     expect((app.find("select.model").element as HTMLSelectElement).value).toBe("ollama:qwen3:4b-instruct");
-    expect(localStorage.getItem("xplanator.model")).toBe("ollama:qwen3:4b-instruct");
+    expect(localStorage.getItem("xplainer.model")).toBe("ollama:qwen3:4b-instruct");
     expect(calls("preload_ollama").map((call) => call.args.model)).toEqual(["qwen3:4b-instruct"]);
   });
 
@@ -145,7 +145,7 @@ describe("models and first run", () => {
     backend.setup = { ...backend.setup, ollama_models: [], clis: [] };
     const app = await open();
     await explain("handshake", "Redes - Wikipedia");
-    expect(app.find(".setup").text()).toContain("Xplanator necesita un modelo de IA");
+    expect(app.find(".setup").text()).toContain("Xplainer necesita un modelo de IA");
     expect(app.find("form input").attributes("disabled")).toBeDefined();
     expect(calls("ask_ollama")).toHaveLength(0);
 
@@ -157,17 +157,17 @@ describe("models and first run", () => {
   });
 
   it("keeps a chosen Ollama model while Ollama is closed", async () => {
-    localStorage.setItem("xplanator.model", "ollama:qwen3:4b-instruct");
+    localStorage.setItem("xplainer.model", "ollama:qwen3:4b-instruct");
     backend.setup = { ...backend.setup, ollama_running: false, ollama_models: [] };
     const app = await open();
-    expect(localStorage.getItem("xplanator.model")).toBe("ollama:qwen3:4b-instruct");
+    expect(localStorage.getItem("xplainer.model")).toBe("ollama:qwen3:4b-instruct");
     expect(app.find(".setup").exists()).toBe(false); // Claude is still usable.
   });
 });
 
 describe("explaining", () => {
   it("sends the selection with the window as a hint and the structured prompt", async () => {
-    localStorage.setItem("xplanator.model", "claude");
+    localStorage.setItem("xplainer.model", "claude");
     const app = await open();
     await explain("TypeError: Cannot read properties of undefined", "DevTools");
     await settle();
@@ -186,7 +186,7 @@ describe("explaining", () => {
   });
 
   it("asks a suggested question with the whole conversation", async () => {
-    localStorage.setItem("xplanator.model", "claude");
+    localStorage.setItem("xplainer.model", "claude");
     const app = await open();
     await explain("TCP");
     await settle();
@@ -277,12 +277,12 @@ describe("chained explanation", () => {
     const app = await open();
     await explain("TCP", "Redes");
     await settle();
-    await emit("explain-deeper", { text: "handshake", window_title: "Xplanator" });
+    await emit("explain-deeper", { text: "handshake", window_title: "Xplainer" });
     await settle();
     expect(lastPrompt()).toBe("Explícame esto:\n<seleccion>\nhandshake\n</seleccion>\nAparece en una explicación sobre: TCP");
     expect(trail(app)).toBe("TCP › handshake");
 
-    await emit("explain-deeper", { text: "SYN", window_title: "Xplanator" });
+    await emit("explain-deeper", { text: "SYN", window_title: "Xplainer" });
     await settle();
     expect(trail(app)).toBe("TCP › handshake › SYN");
 
@@ -316,7 +316,7 @@ describe("chained explanation", () => {
     const app = await open();
     await explain("TCP");
     await vi.waitFor(() => expect(calls("ask_ollama")).toHaveLength(1));
-    await emit("explain-deeper", { text: "handshake", window_title: "Xplanator" });
+    await emit("explain-deeper", { text: "handshake", window_title: "Xplainer" });
     await flushPromises();
     expect(app.find(".trail").exists()).toBe(false);
     expect(calls("ask_ollama")).toHaveLength(1);
@@ -357,7 +357,7 @@ describe("history", () => {
     const app = await open();
     await app.find('header button[title="Ajustes"]').trigger("click");
     await app.find(".check input").setValue(false);
-    expect(localStorage.getItem("xplanator.historyEnabled")).toBe("false");
+    expect(localStorage.getItem("xplainer.historyEnabled")).toBe("false");
     await explain("TCP");
     await settle();
     expect(calls("write_history")).toHaveLength(0);
@@ -442,7 +442,7 @@ describe("notes", () => {
     expect(first.title).toBe("TCP");
     expect(first.existing).toBeNull();
     expect(first.content).toContain('origen: "Redes: \\"TCP\\" - Wikipedia"');
-    expect(first.content).toContain("tags: [xplanator]");
+    expect(first.content).toContain("tags: [xplainer]");
     expect(buttonNamed(app, "Nota guardada ✓")).toBeDefined();
 
     await buttonNamed(app, "Más simple").trigger("click");

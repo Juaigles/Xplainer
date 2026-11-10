@@ -1,4 +1,4 @@
-# Pruebas de Xplanator
+# Pruebas de Xplainer
 
 Criterios de aceptación de cada función y cómo se comprueba cada uno: con un test automático (su nombre entre comillas), con la prueba de humo del ejecutable final o a mano.
 
@@ -95,7 +95,7 @@ Los datos de `src-tauri/tests/fixtures` son salidas reales de `claude -p`, `code
 
 ## Prueba de humo del ejecutable final
 
-Con `src-tauri/target/release/xplanator.exe` y sin otra copia abierta (ni Explicador, que comparte Alt+X):
+Con `src-tauri/target/release/xplainer.exe` y sin otra copia abierta (ni Xplanator ni Explicador, que comparten Alt+X):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/smoke-test.ps1
@@ -105,5 +105,5 @@ Escribe `PASS` o `FAIL` por cada comprobación y termina con código 1 si alguna
 
 1. Arrancarlo y comprobar que Alt+X (`MOD_ALT`, `X`) y Win+Shift+Z (`MOD_WIN | MOD_SHIFT`, `Z`) están ocupados: `RegisterHotKey` desde otro proceso falla con el error 1409.
 2. Arrancarlo otra vez: la segunda copia termina sola, queda un solo proceso y el recuadro, que empezó oculto, se hace visible.
-3. Comprobar que `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` no tiene una entrada de Xplanator.
+3. Comprobar que `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` no tiene una entrada de Xplainer.
 4. Cerrarlo y comprobar que los atajos vuelven a quedar libres.

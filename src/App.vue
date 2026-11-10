@@ -93,10 +93,10 @@ const SUBSCRIPTION_MODELS: ModelOption[] = [
   { id: "claude", label: "Claude Haiku · suscripción", provider: "claude", model: "claude-haiku-5-5" },
   { id: "codex", label: "Codex GPT-5.6 Luna · suscripción", provider: "codex", model: "gpt-5.6-luna" },
 ];
-const STORAGE_KEY = "xplanator.model";
-const NOTES_FOLDER_KEY = "xplanator.notesFolder";
-const HISTORY_ENABLED_KEY = "xplanator.historyEnabled";
-const HISTORY_EXCLUDED_KEY = "xplanator.historyExcluded";
+const STORAGE_KEY = "xplainer.model";
+const NOTES_FOLDER_KEY = "xplainer.notesFolder";
+const HISTORY_ENABLED_KEY = "xplainer.historyEnabled";
+const HISTORY_EXCLUDED_KEY = "xplainer.historyExcluded";
 const HISTORY_LIMIT = 500;
 // Windows whose text must not reach the history file: password managers, banks, private browsing.
 const DEFAULT_EXCLUDED = [
@@ -608,7 +608,7 @@ function noteMarkdown(): string {
   if (trail.value.length) {
     properties.push(`contexto: ${JSON.stringify(trail.value.map((level) => level.term).join(" › "))}`);
   }
-  properties.push("tags: [xplanator]");
+  properties.push("tags: [xplainer]");
   const parts = [`---\n${properties.join("\n")}\n---`];
   // The file name holds only the first line: code, errors and long text go whole into the note.
   if (term.value.includes("\n")) parts.push("```\n" + term.value + "\n```");
@@ -742,7 +742,7 @@ onUnmounted(() => {
 <template>
   <main class="popup">
     <header data-tauri-drag-region>
-      <span class="term" data-tauri-drag-region :title="term">{{ term || "Xplanator" }}</span>
+      <span class="term" data-tauri-drag-region :title="term">{{ term || "Xplainer" }}</span>
       <select v-model="selectedId" class="model" title="Modelo que explica" @focus="refreshSetup">
         <option v-for="option in models" :key="option.id" :value="option.id">{{ option.label }}</option>
       </select>
@@ -775,7 +775,7 @@ onUnmounted(() => {
     <section v-if="view === 'settings'" class="panel">
       <label>
         Carpeta de notas
-        <input v-model.trim="notesFolder" placeholder="C:\Users\…\MiVault\Xplanator" />
+        <input v-model.trim="notesFolder" placeholder="C:\Users\…\MiVault\Xplainer" />
       </label>
       <p class="notice">
         «Guardar nota», bajo cada respuesta, crea ahí un .md con la conversación; por ejemplo, en una carpeta de tu
@@ -818,7 +818,7 @@ onUnmounted(() => {
 
       <div v-if="needsSetup && setup" class="setup">
         <p v-if="setupStep !== 'start'">
-          Para explicar, Xplanator necesita un modelo de IA. Puede usar uno gratuito que funciona en tu
+          Para explicar, Xplainer necesita un modelo de IA. Puede usar uno gratuito que funciona en tu
           ordenador, con Ollama.
         </p>
         <template v-if="setupStep === 'install'">

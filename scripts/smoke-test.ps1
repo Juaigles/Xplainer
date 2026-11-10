@@ -1,8 +1,8 @@
 # Smoke test of the release executable: both shortcuts registered, a single instance that shows
 # the popup when launched again, no autostart entry, shortcuts freed on exit.
-# Usage: powershell -ExecutionPolicy Bypass -File scripts/smoke-test.ps1 [-Exe <path to xplanator.exe>]
-# Close any running Xplanator (installed or dev) first: they share the shortcuts and the identifier.
-param([string]$Exe = "$PSScriptRoot\..\src-tauri\target\release\xplanator.exe")
+# Usage: powershell -ExecutionPolicy Bypass -File scripts/smoke-test.ps1 [-Exe <path to xplainer.exe>]
+# Close any running Xplainer (installed or dev) first: they share the shortcuts and the identifier.
+param([string]$Exe = "$PSScriptRoot\..\src-tauri\target\release\xplainer.exe")
 $ErrorActionPreference = "Stop"
 Add-Type @"
 using System;
@@ -17,13 +17,13 @@ public static class Smoke {
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
-  // Visibility of the process's window titled "Xplanator" (the popup); null if it has none.
+  // Visibility of the process's window titled "Xplainer" (the popup); null if it has none.
   public static bool? PopupVisible(uint pid) {
     bool? visible = null;
     EnumWindows((h, l) => {
       uint owner; GetWindowThreadProcessId(h, out owner);
       var title = new StringBuilder(64); GetWindowText(h, title, 64);
-      if (owner == pid && title.ToString() == "Xplanator") { visible = IsWindowVisible(h); return false; }
+      if (owner == pid && title.ToString() == "Xplainer") { visible = IsWindowVisible(h); return false; }
       return true;
     }, IntPtr.Zero);
     return visible;
@@ -47,7 +47,7 @@ function Test-Free($shortcut) {
 }
 
 $Exe = (Resolve-Path $Exe).Path
-if (Get-Process xplanator, explicador -ErrorAction SilentlyContinue) { throw "Close Xplanator and Explicador before the smoke test." }
+if (Get-Process xplainer, xplanator, explicador -ErrorAction SilentlyContinue) { throw "Close Xplainer, Xplanator and Explicador before the smoke test." }
 foreach ($s in $shortcuts) { Check "$($s.Name) is free before starting" (Test-Free $s) }
 
 $first = Start-Process -FilePath $Exe -PassThru
@@ -60,11 +60,11 @@ $second = Start-Process -FilePath $Exe -PassThru
 Start-Sleep -Seconds 4
 $second.Refresh()
 Check "a second launch exits by itself" $second.HasExited
-Check "only one process remains" (@(Get-Process xplanator -ErrorAction SilentlyContinue).Count -eq 1)
+Check "only one process remains" (@(Get-Process xplainer -ErrorAction SilentlyContinue).Count -eq 1)
 Check "the second launch shows the popup of the first" ([Smoke]::PopupVisible([uint32]$first.Id) -eq $true)
 
 $run = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-$entries = @($run.PSObject.Properties | Where-Object { "$($_.Value)" -match "xplanator" -or $_.Name -match "xplanator" })
+$entries = @($run.PSObject.Properties | Where-Object { "$($_.Value)" -match "xplainer" -or $_.Name -match "xplainer" })
 Check "no 'start with Windows' entry by default" ($entries.Count -eq 0) (($entries | ForEach-Object { $_.Name }) -join ", ")
 
 Stop-Process -Id $first.Id

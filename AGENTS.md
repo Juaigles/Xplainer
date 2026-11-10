@@ -1,8 +1,8 @@
-# Xplanator: notas para agentes
+# Xplainer: notas para agentes
 
-App de bandeja para Windows (Tauri v2 + Rust + Vue 3 + TypeScript): seleccionas un texto, pulsas **Alt+X** y un recuadro lo explica en español, con repreguntas. **Win+Shift+Z** hace lo mismo con un recorte de pantalla y OCR. Antes se llamaba Explicador; el identificador cambió a `com.kiook.xplanator`, así que es otra app para Windows. El `README.md` cuenta cómo usarla e instalarla. Este fichero recoge lo que no se deduce del código: decisiones, porqués, datos comprobados y trampas.
+App de bandeja para Windows (Tauri v2 + Rust + Vue 3 + TypeScript): seleccionas un texto, pulsas **Alt+X** y un recuadro lo explica en español, con repreguntas. **Win+Shift+Z** hace lo mismo con un recorte de pantalla y OCR. Antes se llamaba Xplanator y, antes aún, Explicador; el identificador cambió a `com.kiook.xplainer`, así que es otra app para Windows (sin el historial ni los ajustes de las anteriores). El `README.md` cuenta cómo usarla e instalarla. Este fichero recoge lo que no se deduce del código: decisiones, porqués, datos comprobados y trampas.
 
-Código, identificadores y commits en inglés; commits de una línea `tipo(xplanator): frase`. Commit, push y PR solo con permiso del dueño, de uno en uno. Se trabaja en `main`.
+Código, identificadores y commits en inglés; commits de una línea `tipo(xplainer): frase`. Commit, push y PR solo con permiso del dueño, de uno en uno. Se trabaja en `main`.
 
 ## Mapa del código
 
@@ -82,7 +82,7 @@ Código, identificadores y commits en inglés; commits de una línea `tipo(xplan
 
 ## Desarrollar y probar
 
-- `npm run tauri dev` para desarrollar. `npm run tauri build` genera el instalador en `src-tauri/target/release/bundle/nsis/Xplanator_0.2.0_x64-setup.exe`; la compilación final tarda entre 3 y 8 minutos.
+- `npm run tauri dev` para desarrollar. `npm run tauri build` genera el instalador en `src-tauri/target/release/bundle/nsis/Xplainer_0.2.0_x64-setup.exe`; la compilación final tarda entre 3 y 8 minutos.
 - La app instalada no se actualiza sola: tras cada cambio hay que recompilar y reinstalar.
 - Antes de usar `tauri dev` o de probar el ejecutable final, cierra la app instalada. Comparten atajo e identificador, y la instancia única reenvía la segunda copia a la primera y la cierra.
 - Con una ruta de proyecto muy larga, el enlazador de Windows falla (`LNK1104`). Usa una ruta corta o un `CARGO_TARGET_DIR` corto.

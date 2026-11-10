@@ -23,7 +23,7 @@ struct TempFolder(PathBuf);
 
 impl TempFolder {
     fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("xplanator-test-{name}-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("xplainer-test-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         TempFolder(path)
@@ -187,7 +187,7 @@ fn run_cli_reads_a_real_process_and_returns_its_answer() {
 #[test]
 fn run_cli_explains_a_program_that_cannot_start() {
     let answers = Answers::default();
-    let error = run_cli(&answers, 1, Command::new("no-such-cli-xplanator"), "", "Claude Code", |_, _| {});
+    let error = run_cli(&answers, 1, Command::new("no-such-cli-xplainer"), "", "Claude Code", |_, _| {});
     assert!(error.unwrap_err().starts_with("No se pudo ejecutar Claude Code"));
     assert!(answers.begin(2).is_ok(), "a failed start leaves the registry usable");
 }
@@ -413,11 +413,11 @@ fn real_codex_answers() {
     assert!(answer.is_ok_and(|text| !text.trim().is_empty()));
 }
 
-/// A real answer from the first local Ollama model, or `XPLANATOR_OLLAMA_MODEL`.
+/// A real answer from the first local Ollama model, or `XPLAINER_OLLAMA_MODEL`.
 #[test]
 #[ignore]
 fn real_ollama_answers() {
-    let model = std::env::var("XPLANATOR_OLLAMA_MODEL")
+    let model = std::env::var("XPLAINER_OLLAMA_MODEL")
         .ok()
         .or_else(|| fetch_ollama_models()?.into_iter().find(|name| !name.contains("cloud")))
         .expect("Ollama running with a local model");
