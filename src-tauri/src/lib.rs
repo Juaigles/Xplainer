@@ -4,7 +4,7 @@ use std::{
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, ErrorKind, Read, Write},
     os::windows::process::CommandExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -249,10 +249,16 @@ fn run_cli(
     let mut child = answers.finish(request_id)?.ok_or_else(|| "cancelled".to_string())?;
     let status = child.wait().map_err(|error| error.to_string())?;
     let stderr = stderr_reader.join().unwrap_or_default();
+    outcome_result(outcome, status.success(), stderr, name)
+}
+
+/// The answer, or the error to show: a reported failure wins; with no answer, the last
+/// recoverable error or stderr explains why.
+fn outcome_result(outcome: Outcome, exited_ok: bool, stderr: String, name: &str) -> Result<String, String> {
     let Outcome { answer, failure, last_error } = outcome;
     match (answer, failure) {
         (_, Some(message)) if !message.is_empty() => Err(format!("{name}: {message}")),
-        (Some(text), None) if status.success() && !text.trim().is_empty() => Ok(text),
+        (Some(text), None) if exited_ok && !text.trim().is_empty() => Ok(text),
         _ => Err(format!("{name} no respondió. {}", last_error.unwrap_or(stderr).trim())),
     }
 }
@@ -269,45 +275,57 @@ async fn ask_claude_code(
     on_text: Channel<String>,
 ) -> Result<String, String> {
     blocking(app, move |answers| {
-        let mut command = Command::new("claude");
-        command.args([
-            "-p", "--model", &model, "--effort", &effort, "--system-prompt", &system,
-            "--output-format", "stream-json", "--include-partial-messages", "--verbose",
-            // A plain question-answer call: no tools, MCP servers, skills or saved session.
-            // No setting sources at all: with "project", Claude Code would walk up from the
-            // working directory and load the user's own ~/.claude/CLAUDE.md as instructions.
-            "--tools", "", "--strict-mcp-config", "--disable-slash-commands",
-            "--setting-sources", "", "--no-session-persistence",
-        ]);
-        // Use the subscription login: with these set, `claude -p` would bill the API instead.
-        command.env_remove("ANTHROPIC_API_KEY").env_remove("ANTHROPIC_AUTH_TOKEN");
+        let command = claude_command(&model, &effort, &system);
         run_cli(answers, request_id, command, &prompt, "Claude Code", |event, outcome| {
-            match event["type"].as_str() {
-                Some("stream_event") => {
-                    let delta = &event["event"]["delta"];
-                    if delta["type"] == "text_delta" {
-                        if let Some(text) = delta["text"].as_str() {
-                            let _ = on_text.send(text.to_string());
-                        }
-                    }
-                }
-                Some("result") => {
-                    let text = event["result"].as_str().unwrap_or_default().to_string();
-                    if event["is_error"] == true {
-                        // Some error results carry an `errors` list instead of `result`.
-                        let errors = event["errors"].as_array().map(|errors| {
-                            errors.iter().filter_map(|error| error.as_str()).collect::<Vec<_>>().join("; ")
-                        });
-                        outcome.failure = Some(if text.is_empty() { errors.unwrap_or_default() } else { text });
-                    } else {
-                        outcome.answer = Some(text);
-                    }
-                }
-                _ => {}
-            }
+            on_claude_event(event, outcome, &mut |text| {
+                let _ = on_text.send(text.to_string());
+            })
         })
     })
     .await
+}
+
+fn claude_command(model: &str, effort: &str, system: &str) -> Command {
+    let mut command = Command::new("claude");
+    command.args([
+        "-p", "--model", model, "--effort", effort, "--system-prompt", system,
+        "--output-format", "stream-json", "--include-partial-messages", "--verbose",
+        // A plain question-answer call: no tools, MCP servers, skills or saved session.
+        // No setting sources at all: with "project", Claude Code would walk up from the
+        // working directory and load the user's own ~/.claude/CLAUDE.md as instructions.
+        "--tools", "", "--strict-mcp-config", "--disable-slash-commands",
+        "--setting-sources", "", "--no-session-persistence",
+    ]);
+    // Use the subscription login: with these set, `claude -p` would bill the API instead.
+    command.env_remove("ANTHROPIC_API_KEY").env_remove("ANTHROPIC_AUTH_TOKEN");
+    command
+}
+
+/// One line of `claude -p --output-format stream-json`: partial text, or the final result.
+fn on_claude_event(event: &Value, outcome: &mut Outcome, on_text: &mut impl FnMut(&str)) {
+    match event["type"].as_str() {
+        Some("stream_event") => {
+            let delta = &event["event"]["delta"];
+            if delta["type"] == "text_delta" {
+                if let Some(text) = delta["text"].as_str() {
+                    on_text(text);
+                }
+            }
+        }
+        Some("result") => {
+            let text = event["result"].as_str().unwrap_or_default().to_string();
+            if event["is_error"] == true {
+                // Some error results carry an `errors` list instead of `result`.
+                let errors = event["errors"].as_array().map(|errors| {
+                    errors.iter().filter_map(|error| error.as_str()).collect::<Vec<_>>().join("; ")
+                });
+                outcome.failure = Some(if text.is_empty() { errors.unwrap_or_default() } else { text });
+            } else {
+                outcome.answer = Some(text);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// ChatGPT models with the user's subscription: Codex headless. Codex sends no partial text,
@@ -322,31 +340,39 @@ async fn ask_codex(
     on_text: Channel<String>,
 ) -> Result<String, String> {
     blocking(app, move |answers| {
-        let effort_setting = format!("model_reasoning_effort={}", plain_word(&effort)?);
-        // Through `cmd` so it also finds a `codex.cmd` launcher. Every argument is a plain word.
-        let mut command = Command::new("cmd");
-        command.args([
-            "/d", "/c", "codex", "exec", "--json", "--ephemeral", "--skip-git-repo-check",
-            // A plain question-answer call: no user config or rules, project instructions,
-            // shell, app connectors, writes or web. The selected text is untrusted input.
-            "--ignore-user-config", "--ignore-rules", "-s", "read-only",
-            "--disable", "shell_tool", "--disable", "apps", "-c", "project_doc_max_bytes=0",
-            "-c", "web_search=disabled", "-c", &effort_setting, "-m", plain_word(&model)?, "-",
-        ]);
-        // Use the ChatGPT login: with this set, Codex would bill the API instead.
-        command.env_remove("CODEX_API_KEY");
+        let command = codex_command(&model, &effort)?;
         run_cli(answers, request_id, command, &prompt, "Codex", |event, outcome| {
-            on_codex_event(event, outcome, &on_text)
+            on_codex_event(event, outcome, &mut |text| {
+                let _ = on_text.send(text.to_string());
+            })
         })
     })
     .await
 }
 
-fn on_codex_event(event: &Value, outcome: &mut Outcome, on_text: &Channel<String>) {
+fn codex_command(model: &str, effort: &str) -> Result<Command, String> {
+    let effort_setting = format!("model_reasoning_effort={}", plain_word(effort)?);
+    // Through `cmd` so it also finds a `codex.cmd` launcher. Every argument is a plain word.
+    let mut command = Command::new("cmd");
+    command.args([
+        "/d", "/c", "codex", "exec", "--json", "--ephemeral", "--skip-git-repo-check",
+        // A plain question-answer call: no user config or rules, project instructions,
+        // shell, app connectors, writes or web. The selected text is untrusted input.
+        "--ignore-user-config", "--ignore-rules", "-s", "read-only",
+        "--disable", "shell_tool", "--disable", "apps", "-c", "project_doc_max_bytes=0",
+        "-c", "web_search=disabled", "-c", &effort_setting, "-m", plain_word(model)?, "-",
+    ]);
+    // Use the ChatGPT login: with this set, Codex would bill the API instead.
+    command.env_remove("CODEX_API_KEY");
+    Ok(command)
+}
+
+/// One line of `codex exec --json`.
+fn on_codex_event(event: &Value, outcome: &mut Outcome, on_text: &mut impl FnMut(&str)) {
     match event["type"].as_str() {
         Some("item.completed") if event["item"]["type"] == "agent_message" => {
             let text = event["item"]["text"].as_str().unwrap_or_default().to_string();
-            let _ = on_text.send(text.clone());
+            on_text(&text);
             outcome.answer = Some(text);
         }
         Some("turn.failed") => outcome.failure = event["error"]["message"].as_str().map(String::from),
@@ -374,7 +400,9 @@ async fn ask_ollama(
 ) -> Result<String, String> {
     blocking(app, move |answers| {
         answers.begin(request_id)?;
-        let answer = run_ollama(answers, request_id, &model, &system, &messages, &on_text);
+        let answer = run_ollama(answers, request_id, &model, &system, &messages, |text| {
+            let _ = on_text.send(text.to_string());
+        });
         answers.finish(request_id).and(answer) // A cancel wins over whatever arrived.
     })
     .await
@@ -386,7 +414,7 @@ fn run_ollama(
     model: &str,
     system: &str,
     messages: &[ChatMessage],
-    on_text: &Channel<String>,
+    on_text: impl FnMut(&str),
 ) -> Result<String, String> {
     let mut chat = vec![json!({ "role": "system", "content": system })];
     chat.extend(messages.iter().map(|message| json!({ "role": message.role, "content": message.content })));
@@ -413,11 +441,24 @@ fn run_ollama(
         return Err(format!("Ollama: {error}"));
     }
 
+    // Cancelled: stop reading. Dropping the response closes the connection and Ollama stops.
+    read_ollama_stream(
+        BufReader::new(response.into_body().into_reader()),
+        || answers.is_live(request_id),
+        on_text,
+    )
+}
+
+/// Reads Ollama's streamed chat (one JSON object per line) while `keep_going` holds.
+fn read_ollama_stream(
+    stream: impl BufRead,
+    keep_going: impl Fn() -> bool,
+    mut on_text: impl FnMut(&str),
+) -> Result<String, String> {
     let mut answer = String::new();
     let mut done = false;
-    for line in BufReader::new(response.into_body().into_reader()).lines() {
-        // Cancelled: stop reading. Dropping the response closes the connection and Ollama stops.
-        if !answers.is_live(request_id) {
+    for line in stream.lines() {
+        if !keep_going() {
             break;
         }
         let line = line.map_err(|error| format!("La respuesta de Ollama se cortó: {error}"))?;
@@ -430,7 +471,7 @@ fn run_ollama(
         // Only the answer: thinking models put their reasoning in `message.thinking`.
         if let Some(text) = event["message"]["content"].as_str().filter(|text| !text.is_empty()) {
             answer.push_str(text);
-            let _ = on_text.send(text.to_string());
+            on_text(text);
         }
         done = event["done"] == true;
     }
@@ -497,7 +538,12 @@ fn is_loaded(model: &str) -> bool {
         .call()
         .ok()
         .and_then(|mut response| response.body_mut().read_json().ok());
-    running.as_ref().and_then(|running| running["models"].as_array()).is_some_and(|models| {
+    running.is_some_and(|running| listed_as_loaded(&running, model))
+}
+
+/// Whether `/api/ps` lists the model among those in memory.
+fn listed_as_loaded(running: &Value, model: &str) -> bool {
+    running["models"].as_array().is_some_and(|models| {
         models.iter().any(|loaded| loaded["name"] == model || loaded["model"] == model)
     })
 }
@@ -511,6 +557,11 @@ fn fetch_ollama_models() -> Option<Vec<String>> {
         .body_mut()
         .read_json()
         .ok()?;
+    chat_models(&tags)
+}
+
+/// The models in an `/api/tags` answer that can chat.
+fn chat_models(tags: &Value) -> Option<Vec<String>> {
     let models = tags["models"].as_array()?;
     // Embedding-only models cannot answer. Older Ollama versions list no capabilities.
     let can_chat = |model: &&Value| {
@@ -578,7 +629,11 @@ fn total_memory_gb() -> u64 {
 /// Small instruct models: they answer without "thinking" first, so they are quick even on a
 /// laptop CPU, and they handle Spanish well.
 fn recommended_model() -> (&'static str, &'static str) {
-    if total_memory_gb() >= 10 {
+    recommended_for(total_memory_gb())
+}
+
+fn recommended_for(memory_gb: u64) -> (&'static str, &'static str) {
+    if memory_gb >= 10 {
         ("qwen3:4b-instruct", "2,5 GB")
     } else {
         ("qwen3:1.7b", "1,4 GB")
@@ -698,7 +753,11 @@ fn history_file(app: &AppHandle) -> Result<PathBuf, String> {
 /// The history as JSON text; an empty list the first time.
 #[tauri::command]
 fn read_history(app: AppHandle) -> Result<String, String> {
-    match fs::read_to_string(history_file(&app)?) {
+    read_history_at(&history_file(&app)?)
+}
+
+fn read_history_at(file: &Path) -> Result<String, String> {
+    match fs::read_to_string(file) {
         Ok(text) => Ok(text),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok("[]".into()),
         Err(error) => Err(format!("No se pudo leer el historial: {error}")),
@@ -708,10 +767,13 @@ fn read_history(app: AppHandle) -> Result<String, String> {
 /// Replaces the whole history. Through a temporary file, so a crash never leaves it half written.
 #[tauri::command]
 fn write_history(app: AppHandle, history: String) -> Result<(), String> {
-    let file = history_file(&app)?;
+    write_history_at(&history_file(&app)?, &history)
+}
+
+fn write_history_at(file: &Path, history: &str) -> Result<(), String> {
     let temporary = file.with_extension("json.tmp");
     fs::write(&temporary, history)
-        .and_then(|()| fs::rename(&temporary, &file))
+        .and_then(|()| fs::rename(&temporary, file))
         .map_err(|error| format!("No se pudo guardar el historial: {error}"))
 }
 
@@ -1075,4 +1137,5 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-
+#[cfg(test)]
+mod tests;

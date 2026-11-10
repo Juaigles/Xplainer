@@ -36,3 +36,7 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+[dev-dependencies]
+# Only to open the PNG fixture of the OCR test; already in the lock file through arboard.
+image = { version = "0.25", default-features = false, features = ["png"] }

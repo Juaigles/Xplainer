@@ -73,7 +73,7 @@ Código, identificadores y commits en inglés; commits de una línea `tipo(xplan
 - El modelo guardado solo se sustituye si ha desaparecido de verdad. Con Ollama cerrado se conserva, para no pasar en silencio a una suscripción cuando Ollama arranca más tarde que la app.
 
 ### Funciones para aprender (v2)
-- **Prompt por tipo de texto.** Haiku con esfuerzo bajo tiende a anunciar "es un término, así que…". Lo evita pedir que clasifique "en silencio" y decir que la respuesta empieza por el punto 1. La regla de "di qué significado elegiste" va dentro del punto 1 de los términos; fuera, provocaba ese preámbulo.
+- **Prompt por tipo de texto.** Haiku con esfuerzo bajo tiende a anunciar "es un término, así que…". Pedirle que clasifique "en silencio", decirle que la respuesta empieza por el punto 1 y meter la regla de "di qué significado elegiste" dentro del punto 1 de los términos lo reduce, pero no lo elimina: medido con llamadas reales en noviembre de 2026, aún sale en 1 de cada 3 o 4 respuestas a un término suelto; con código, párrafos y errores no salió. A veces tampoco numera los puntos.
 - **Precarga de Ollama.** Al elegir un modelo local se manda un `/api/chat` con `messages: []`. `keep_alive` de 30 min, también en cada respuesta (el de Ollama por defecto es de 5). Los modelos `cloud` no se precargan. "Cargando el modelo…" sale de `/api/ps`, consultado antes de marcar la petición en curso.
 - **Cadena.** No se puede bajar de nivel mientras se responde: el nivel guardado quedaría con media respuesta. Cada nivel es una conversación aparte: entrada propia en el historial, nota propia.
 - **Notas.** La carpeta ha de existir; no se crea, para que una errata no deje carpetas sueltas. Nunca se sobrescribe otra nota. `existing` solo se reescribe si está dentro de la carpeta elegida. Windows 11 ya no reserva `CON.ext` y similares, solo `NUL`; los nombres exactos se protegen igualmente.
@@ -86,11 +86,9 @@ Código, identificadores y commits en inglés; commits de una línea `tipo(xplan
 - La app instalada no se actualiza sola: tras cada cambio hay que recompilar y reinstalar.
 - Antes de usar `tauri dev` o de probar el ejecutable final, cierra la app instalada. Comparten atajo e identificador, y la instancia única reenvía la segunda copia a la primera y la cierra.
 - Con una ruta de proyecto muy larga, el enlazador de Windows falla (`LNK1104`). Usa una ruta corta o un `CARGO_TARGET_DIR` corto.
-- No hay tests en el repo. Para comprobar con llamadas reales:
-  1. Añade un módulo `#[cfg(test)]` temporal al final de `lib.rs` que llame a `run_cli`, `run_ollama` o `check_setup`.
-  2. Ejecuta `cargo test --lib -- <filtro> --nocapture --test-threads 1`.
-  3. Quítalo después, sin dejar líneas en blanco de más.
-- Para probar la interfaz sin Tauri, usa un HTML aparte:
+- Tests: `npm run test:all` (Vitest para `App.vue` con los comandos de Rust simulados, y `cargo test` para `src-tauri/src/tests.rs`). Los que llaman a modelos reales están marcados `#[ignore]`. La prueba del ejecutable final es `scripts/smoke-test.ps1`. `TESTING.md` recoge los criterios de aceptación y qué test cubre cada uno.
+- En PowerShell, `$null` pasado a un parámetro `string` de una función nativa llega como cadena vacía: `FindWindow($null, ...)` no encuentra nada. Por eso la prueba del ejecutable recorre las ventanas con `EnumWindows`.
+- Para ver la interfaz sin Tauri (capturas, por ejemplo), usa un HTML aparte:
   1. Define un `window.__TAURI_INTERNALS__` falso que responda a los comandos.
   2. Carga `http://localhost:1420/src/main.ts` desde otro puerto, con `vite` en marcha.
   3. Ábrelo en el navegador interno.

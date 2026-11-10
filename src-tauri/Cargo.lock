@@ -5032,6 +5032,7 @@ name = "xplanator"
 version = "0.2.0"
 dependencies = [
  "arboard",
+ "image",
  "serde",
  "serde_json",
  "tauri",
