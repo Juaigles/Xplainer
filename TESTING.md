@@ -89,6 +89,15 @@ Los datos de `src-tauri/tests/fixtures` son salidas reales de `claude -p`, `code
 - **R4.** Win+Shift+Z queda registrado. Prueba de humo.
 - **R5.** Recortar con la herramienta de Windows y cancelar con Esc. A mano.
 
+### 11 · Contexto de la ventana
+- **W1.** La primera pregunta lleva un bloque `<contexto>` con la app, la ventana, la página y el texto de alrededor; «Contexto» muestra lo enviado y "Repetir sin contexto" pregunta otra vez sin él. Test de frontend: "sends what surrounds the selection, shows it and can ask again without it".
+- **W2.** Con la casilla quitada o en una ventana excluida, el texto de la ventana no sale del equipo, también si el ajuste cambia antes de enviar. Test de frontend: "keeps the window's text on this computer in excluded windows or with the setting off", "applies the settings when a selection waiting for setup is finally sent", "applies a setting changed while the local model is being checked".
+- **W3.** El texto de la ventana solo va en la primera pregunta: ni en las repreguntas ni en el fichero del historial. Test de frontend: "sends the window's text only once: not in follow-ups nor in the history file".
+- **W4.** El texto de otra app no puede cerrar el bloque `<contexto>`. Test de frontend: "does not let the window's text close the context block".
+- **W5.** De la URL solo quedan el esquema, el host y los tramos de ruta que son palabras; nunca credenciales, `?query`, `#fragment`, ids ni tokens. Test: "page_address_keeps_only_scheme_host_and_path_of_web_pages".
+- **W6.** El texto de alrededor no lleva iconos ni huecos y mantiene la selección en el centro; los nombres no se repiten y se cortan a 1.500 caracteres. Test: "clean_around_drops_icons_and_keeps_the_selection_in_the_middle", "clean_names_skips_empty_and_repeated_neighbours".
+- **W7.** UI Automation lee la URL y el texto de alrededor de una página real en Chrome. A mano (comprobado con la vista de negociaciones del espacio de datos). Sin probar: Edge, VS Code, Office y una app colgada.
+
 ### App de escritorio
 - **D1.** Alt+X queda registrado al arrancar. Prueba de humo.
 - **D2.** Una sola instancia: abrirla otra vez no crea otra copia y muestra el recuadro. Prueba de humo.

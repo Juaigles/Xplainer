@@ -19,6 +19,7 @@ use tauri::{
     tray::TrayIconBuilder,
     AppHandle, Emitter, Manager, PhysicalPosition, Runtime, WindowEvent,
 };
+use screen_context::ScreenContext;
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use windows::{
@@ -44,6 +45,8 @@ use windows::{
     },
 };
 
+mod screen_context;
+
 const SHORTCUT_NAME: &str = "Alt+X";
 
 /// For text that cannot be selected (in an image, a video, a locked PDF): snip it and read it.
@@ -55,11 +58,13 @@ static CAPTURING: AtomicBool = AtomicBool::new(false);
 /// it again after cancelling a snip (Esc) works at once.
 static LATEST_SNIP: AtomicU64 = AtomicU64::new(0);
 
-/// What the popup receives: the selected text and the title of the window it came from.
+/// What the popup receives: the selected text, the title of the window it came from and, for
+/// Alt+X, what surrounds the selection there.
 #[derive(Clone, Serialize)]
 struct Selection {
     text: String,
     window_title: String,
+    context: Option<ScreenContext>,
 }
 
 /// Hides the console window that Windows would open for a child process.
@@ -1000,6 +1005,8 @@ fn explain_selection(app: &AppHandle) {
     mask_alt_menu();
     let window_title = foreground_window_title();
     let in_popup = popup_is_foreground(app);
+    // Read while the selection is copied, before the popup takes the focus.
+    let pending = if in_popup { None } else { screen_context::start(unsafe { GetForegroundWindow() }) };
     // Keys still held: don't inject anything; the popup opens empty so the user can type the term.
     let text = if wait_for_modifiers_release() {
         capture_selection()
@@ -1008,10 +1015,11 @@ fn explain_selection(app: &AppHandle) {
     };
     if in_popup {
         // A word selected in an answer: explain it one level deeper, without moving the popup.
-        let _ = app.emit("explain-deeper", Selection { text, window_title });
+        let _ = app.emit("explain-deeper", Selection { text, window_title, context: None });
         return;
     }
-    let _ = app.emit("explain", Selection { text, window_title });
+    let context = pending.and_then(|pending| pending.finish());
+    let _ = app.emit("explain", Selection { text, window_title, context });
     show_popup_near_cursor(app);
 }
 
@@ -1082,7 +1090,7 @@ fn explain_snip(app: &AppHandle, snip: u64) {
     };
     let failure = match recognize_text(&image) {
         Ok(text) if !text.trim().is_empty() => {
-            let _ = app.emit("explain", Selection { text, window_title });
+            let _ = app.emit("explain", Selection { text, window_title, context: None });
             None
         }
         Ok(_) => Some("No he encontrado texto en el recorte.".to_string()),
@@ -1092,6 +1100,12 @@ fn explain_snip(app: &AppHandle, snip: u64) {
         let _ = app.emit("snip-failed", message);
     }
     show_popup_near_cursor(app);
+}
+
+/// "Usar el contexto de la ventana", from the settings.
+#[tauri::command]
+fn set_screen_context(enabled: bool) {
+    screen_context::ENABLED.store(enabled, Ordering::SeqCst);
 }
 
 fn popup_is_foreground(app: &AppHandle) -> bool {
@@ -1138,7 +1152,7 @@ pub fn run() {
                     return;
                 }
             }
-            let empty = Selection { text: String::new(), window_title: String::new() };
+            let empty = Selection { text: String::new(), window_title: String::new(), context: None };
             let _ = app.emit("explain", empty);
             show_popup_near_cursor(app);
         }))
@@ -1182,6 +1196,7 @@ pub fn run() {
             save_note,
             read_history,
             write_history,
+            set_screen_context,
             cancel_answer
         ])
         .on_window_event(|window, event| {

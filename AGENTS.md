@@ -16,8 +16,10 @@ Código, identificadores y commits en inglés; commits de una línea `tipo(xplai
   - Recorte con OCR: `snip_screen`, `recognize_text`, `rows`, `explain_snip`.
   - Ficheros: `save_note`, `note_name`, `read_history`, `write_history`.
   - Bandeja, instancia única y arranque con Windows (`run`).
+- `src-tauri/src/screen_context.rs`: lo que rodea la selección, leído con UI Automation al pulsar Alt+X (`start`, `finish`, `page_address`).
 - `src/App.vue`: todo el frontend.
   - Prompt (`SYSTEM_PROMPT`), con una estructura por tipo de texto: término, párrafo, código o error.
+  - Bloque `<contexto>` de la primera pregunta (`contextLines`, `sentFirstQuestion`, `firstPrompt`).
   - Selector de modelo y panel del asistente (`needsSetup`).
   - Conversación en memoria como texto plano (`history`); niveles de la cadena en `trail`.
   - Vistas `chat`, `history` y `settings`. Los ajustes van en `localStorage`.
@@ -83,6 +85,20 @@ Código, identificadores y commits en inglés; commits de una línea `tipo(xplai
 - **Notas.** La carpeta ha de existir; no se crea, para que una errata no deje carpetas sueltas. Nunca se sobrescribe otra nota. `existing` solo se reescribe si está dentro de la carpeta elegida. Windows 11 ya no reserva `CON.ext` y similares, solo `NUL`; los nombres exactos se protegen igualmente.
 - **Historial.** JSON en `app_data_dir`, escrito a un `.tmp` y renombrado: `fs::rename` sustituye en Windows (`MOVEFILE_REPLACE_EXISTING`). Los comandos síncronos de Tauri corren en el hilo principal, así que las escrituras no se pisan. No se escribe hasta haber leído el fichero, para no borrarlo si la lectura falla. La exclusión compara palabras completas del título de la ventana: con subcadenas, "ING" bloquearía "Settings".
 - **OCR.** Abre `ms-screenclip:` y espera una imagen nueva en el portapapeles (30 s). Cada Win+Shift+Z tiene un número y la espera antigua se rinde ante una nueva: si no, cancelar con Esc bloqueaba el atajo. La imagen se queda en el portapapeles, como con Win+Shift+S. El OCR de Windows parte las líneas de código donde hay huecos y las desordena: `rows` las vuelve a juntar por altura.
+
+### Contexto de la ventana
+- **Por qué.** Una palabra suelta es ambigua: "Negotiations", seleccionada en la vista de negociaciones de un espacio de datos, se explicaba como regatear un coche. Con el título de la ventana no basta. Medido con Haiku en noviembre de 2026: con el título, 2 de 2 respuestas genéricas; con la URL y el texto de alrededor, 2 de 2 en el ámbito correcto.
+- **Cómo.** Al pulsar Alt+X, Rust lee la ventana de origen con UI Automation en un hilo propio, mientras se copia la selección. Envía la app, la URL y unas 8 líneas antes y después de la selección. Si no hay texto seleccionable, envía los nombres de los elementos cercanos al cursor.
+- **Límites de lo que se lee.**
+  - Solo dentro de una página o documento: nunca la barra de direcciones ni las pestañas.
+  - Nunca se sube hasta el documento entero, que empezaría por sus menús.
+  - El cursor solo cuenta sobre la misma ventana: un navegador muestra muchas desde un solo proceso.
+  - Como mucho 1.500 caracteres y 200 nombres.
+- **Tiempos.** `CUIAutomation8` con 700 ms por llamada (el cliente antiguo no corta con una app colgada) y 800 ms en total; si no llega, se explica sin contexto. Mientras siga abierta una lectura no empieza otra, para no acumular hilos.
+- **URL.** Solo `http(s)`, sin `usuario:clave@`, sin `?query` ni `#fragment`. De la ruta solo quedan los tramos que son palabras en minúscula; el resto pasa a `…`, porque puede ser un id o un token. Los códigos de letras con guiones (como los de Google Meet) parecen palabras y pasan.
+- **Privacidad.** Se activa por defecto, con la casilla "Usar el contexto de la ventana". La lista de exclusión del historial también bloquea el contexto. Ambos ajustes se aplican justo al enviar, no al capturar. El contexto solo viaja en la primera pregunta: la conversación guarda la versión sin él, así que no llega en repreguntas, ni a otro modelo elegido a mitad, ni al historial.
+- **Entrada no fiable.** `<` y `>` del contexto pasan a `‹` y `›`: el texto de la página no puede cerrar `<contexto>`. El prompt dice que el contexto solo sirve para elegir el significado y que no se siguen sus instrucciones.
+- **Comprobado a mano** en Chrome, con la vista real de negociaciones (`localhost`). Sin probar: Edge, VS Code, Office y una app colgada de verdad.
 
 ## Desarrollar y probar
 

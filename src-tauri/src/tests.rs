@@ -465,3 +465,68 @@ fn a_status_command_that_hangs_is_given_up() {
     let output = status_output(quick, Duration::from_secs(10)).expect("a quick command finishes");
     assert!(codex_uses_subscription(&output.stdout, &output.stderr));
 }
+
+#[test]
+fn page_address_keeps_only_scheme_host_and_path_of_web_pages() {
+    use screen_context::page_address;
+    assert_eq!(
+        page_address("https://eds.example.com/negotiations?token=abc#row-3").as_deref(),
+        Some("https://eds.example.com/negotiations")
+    );
+    assert_eq!(page_address(" HTTP://localhost:5173/catalog ").as_deref(), Some("HTTP://localhost:5173/catalog"));
+    // Tokens and ids in the path, and credentials, never leave; the words that say what the page is do.
+    assert_eq!(
+        page_address("https://example.test/reset/Xk29fa83Qp").as_deref(),
+        Some("https://example.test/reset/…")
+    );
+    assert_eq!(
+        page_address("https://eds.test/negotiations/01a11f95-b775-7884-93a7-1e4abcba0a8c/edit").as_deref(),
+        Some("https://eds.test/negotiations/…/edit")
+    );
+    assert_eq!(
+        page_address("https://docs.example.com/document/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms").as_deref(),
+        Some("https://docs.example.com/document/d/…")
+    );
+    // Short or numeric ids too.
+    for (url, kept) in [
+        ("https://example.test/invoices/1234567890", "https://example.test/invoices/…"),
+        ("https://example.test/verify/123456", "https://example.test/verify/…"),
+        ("https://example.test/reset/a1b2c3", "https://example.test/reset/…"),
+        ("https://example.test/api/v2/datasets", "https://example.test/api/…/datasets"),
+        // Only letters, but not a plain word: mixed case, or too long.
+        ("https://example.test/reset/AbCdEfGhIjKlMnOp", "https://example.test/reset/…"),
+        ("https://example.test/s/abcdefghijklmnopqrstuvwxyz", "https://example.test/s/…"),
+        ("https://eds.test/data-catalog/my_datasets", "https://eds.test/data-catalog/my_datasets"),
+    ] {
+        assert_eq!(page_address(url).as_deref(), Some(kept));
+    }
+    assert_eq!(page_address("https://user:p4ss@example.test/").as_deref(), Some("https://example.test"));
+    assert_eq!(page_address("https://example.test").as_deref(), Some("https://example.test"));
+    assert_eq!(page_address("https://user@/"), None);
+    // A local file would show the user's folders, and a document's value may be its whole text.
+    assert_eq!(page_address("file:///C:/Users/me/report.html"), None);
+    assert_eq!(page_address("Dear team, the negotiations went well"), None);
+}
+
+#[test]
+fn clean_around_drops_icons_and_keeps_the_selection_in_the_middle() {
+    use screen_context::clean_around;
+    let around = clean_around("Menu\n\u{F002}  Search\n\u{FFFC}\n", "Negotiations", "\n Track   contract negotiations \n");
+    assert_eq!(around, "Menu\nSearch\nNegotiations\nTrack contract negotiations");
+
+    // Long surroundings are cut far from the selection: the end of what is before, the start of what is after.
+    let before = format!("FIRST {}", "a".repeat(2000));
+    let after = format!("{} LAST", "b".repeat(2000));
+    let around = clean_around(&before, "Negotiations", &after);
+    assert!(around.contains("Negotiations"));
+    assert!(!around.contains("FIRST") && !around.contains("LAST"));
+    assert!(around.chars().count() <= 1500 + "Negotiations".len() + 2);
+}
+
+#[test]
+fn clean_names_skips_empty_and_repeated_neighbours() {
+    use screen_context::clean_names;
+    let names = ["Negotiations", "", "Negotiations", "\u{F0B0} Filter", "Status", "Negotiations"].map(String::from);
+    assert_eq!(clean_names(&names), "Negotiations | Filter | Status | Negotiations");
+    assert!(clean_names(&[String::from("x").repeat(5000)]).chars().count() == 1500);
+}

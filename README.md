@@ -28,7 +28,7 @@ A tray app that turns any word, paragraph, piece of code or error message into a
 
 Reading documentation, a paper or a code review, you hit a word you don't know. Searching for it means leaving what you were reading, opening a browser and wading through results written for someone else.
 
-Xplainer stays out of the way in the tray. Select the text, press <kbd>Alt</kbd>+<kbd>X</kbd>, and a small popup next to your cursor explains it at the right level, using the title of the window you were in to pick the right meaning.
+Xplainer stays out of the way in the tray. Select the text, press <kbd>Alt</kbd>+<kbd>X</kbd>, and a small popup next to your cursor explains it at the right level, using where you selected it (the app, the web page and the text around it) to pick the right meaning.
 
 ## Features
 
@@ -80,13 +80,15 @@ Launching Xplainer again from the Start menu just opens the popup of the copy al
 - **No API keys.** Xplainer never asks for or stores credentials. Claude and Codex run through their own command-line tools, signed in with your account; Xplainer removes API keys from their environment, so they always use your subscription instead of pay-per-use billing.
 - **Selected text is untrusted.** It may contain instructions written by someone else. Claude runs without tools, MCP servers or your personal settings; Codex runs read-only, without a shell, connectors or web search.
 - **History stays on your computer**, in `%APPDATA%\com.kiook.xplainer\history.json`. You can pause it, delete single entries or all of it, and list words that block saving when they appear in the source window's title. By default it skips password managers, banks and private browsing windows.
+- **Window context you can check.** With <kbd>Alt</kbd>+<kbd>X</kbd>, Xplainer also sends the app, the page address (without query strings, ids or tokens) and up to 1,500 characters around the selection, only with the first question. *Contexto*, above the answer, shows exactly what was sent. Turn it off in ⚙ → *Usar el contexto de la ventana*; windows in the exclusion list never send it.
 - **No telemetry.** With a local Ollama model, nothing leaves your computer.
 
 ## How it works
 
 1. A global shortcut waits for you to release the keys, simulates <kbd>Ctrl</kbd>+<kbd>C</kbd>, reads the clipboard and puts your previous clipboard text back.
-2. The popup sends the text and the source window's title to the chosen model with a teaching prompt, and streams the answer as it arrives.
-3. The conversation is kept as plain text, so you can switch models halfway through.
+2. Meanwhile, Windows UI Automation reads what surrounds the selection in the source window ([`src-tauri/src/screen_context.rs`](src-tauri/src/screen_context.rs)).
+3. The popup sends the text and that context to the chosen model with a teaching prompt, and streams the answer as it arrives.
+4. The conversation is kept as plain text, so you can switch models halfway through.
 
 The native side is Rust ([`src-tauri/src/lib.rs`](src-tauri/src/lib.rs)); the popup is Vue 3 and TypeScript ([`src/App.vue`](src/App.vue)). [`AGENTS.md`](AGENTS.md) records the design decisions and their reasons (in Spanish).
 
