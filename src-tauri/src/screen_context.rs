@@ -21,7 +21,9 @@ use windows::{
         },
         UI::{
             Accessibility::*,
-            WindowsAndMessaging::{GetAncestor, GetCursorPos, GetWindowThreadProcessId, WindowFromPoint, GA_ROOT},
+            WindowsAndMessaging::{
+                GetAncestor, GetClassNameW, GetCursorPos, GetWindowThreadProcessId, WindowFromPoint, GA_ROOT,
+            },
         },
     },
 };
@@ -39,6 +41,9 @@ const MAX_ELEMENTS: i32 = 200;
 const TIMEOUT: Duration = Duration::from_millis(800);
 /// The most each UI Automation call may wait for the app (its defaults are 2 and 20 seconds).
 const CALL_TIMEOUT_MS: u32 = 700;
+/// How long a Chromium window takes to build its accessibility tree after the first question
+/// (measured: an empty pane at once, the page 300 ms later).
+const CHROMIUM_WAKE_UP: Duration = Duration::from_millis(300);
 /// A read that is still running, stuck in a hung app: no new one starts until it ends, so
 /// pressing Alt+X again and again cannot pile up threads.
 static READING: AtomicBool = AtomicBool::new(false);
@@ -107,13 +112,22 @@ unsafe fn read_with_com(window: HWND) -> Option<ScreenContext> {
         let walker = automation.ControlViewWalker().ok()?;
         // Only elements of the app the text came from: the cursor may rest on another window.
         let own = |element: &IUIAutomationElement| element.CurrentProcessId().is_ok_and(|id| id as u32 == pid);
-        let focused = automation.GetFocusedElement().ok().filter(own);
-        // The cursor counts only over that same window: one browser shows many windows.
-        let over_window = GetAncestor(WindowFromPoint(cursor), GA_ROOT) == window;
-        let hovered = if over_window { automation.ElementFromPoint(cursor).ok().filter(own) } else { None };
-
-        // Only what is inside a page or document: never the browser's own address bar or tabs.
-        let document = focused.as_ref().and_then(|element| document_of(&walker, element));
+        // Chromium (Chrome, Edge, Electron apps such as VS Code) builds its accessibility tree
+        // only when a client first asks, and that first answer is an empty pane: ask once more.
+        let mut tries = if is_chromium(window) { 2 } else { 1 };
+        let (focused, hovered, document) = loop {
+            let focused = automation.GetFocusedElement().ok().filter(own);
+            // The cursor counts only over that same window: one browser shows many windows.
+            let over_window = GetAncestor(WindowFromPoint(cursor), GA_ROOT) == window;
+            let hovered = if over_window { automation.ElementFromPoint(cursor).ok().filter(own) } else { None };
+            // Only what is inside a page or document: never the browser's own address bar or tabs.
+            let document = focused.as_ref().and_then(|element| document_of(&walker, element));
+            tries -= 1;
+            if document.is_some() || tries == 0 || Instant::now() + CHROMIUM_WAKE_UP > deadline {
+                break (focused, hovered, document);
+            }
+            thread::sleep(CHROMIUM_WAKE_UP);
+        };
         let url = document
             .as_ref()
             .and_then(|document| document.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId).ok())
@@ -140,6 +154,13 @@ unsafe fn read_with_com(window: HWND) -> Option<ScreenContext> {
 
 fn text(value: windows::core::Result<BSTR>) -> String {
     value.map(|b| b.to_string()).unwrap_or_default()
+}
+
+/// Chrome, Edge and Electron apps all draw their windows with this class.
+fn is_chromium(window: HWND) -> bool {
+    let mut buffer = [0u16; 64];
+    let len = unsafe { GetClassNameW(window, &mut buffer) };
+    String::from_utf16_lossy(&buffer[..len.max(0) as usize]).starts_with("Chrome_WidgetWin_")
 }
 
 fn is_document(element: &IUIAutomationElement) -> bool {
