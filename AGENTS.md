@@ -106,7 +106,7 @@ Código, identificadores y commits en inglés; commits de una línea `tipo(xplai
 
 ### Linux (v3)
 - **Alcance elegido por el dueño:** el núcleo sin OCR. Atajo en X11 y orden `xplainer --explain` en Wayland; título y contexto como en Windows; `.deb` y AppImage.
-- **Wayland no deja registrar atajos globales** (`global-hotkey` solo funciona en X11). Con `WAYLAND_DISPLAY` o `XDG_SESSION_TYPE=wayland` no se registra Alt+X: el usuario crea en su escritorio un atajo que ejecute `xplainer --explain`, y la instancia única le pasa la orden a la copia en marcha. El portal `GlobalShortcuts` (GNOME 48+, KDE) sería la mejora; no se hizo para no añadir `ashpd` ni un `.desktop` registrado.
+- **Wayland no deja registrar atajos globales** (`global-hotkey` solo funciona en X11). Con `WAYLAND_DISPLAY` o `XDG_SESSION_TYPE=wayland` no se registra Alt+X: el usuario crea en su escritorio un atajo que ejecute `xplainer --explain`, y la instancia única le pasa la orden a la copia en marcha. Si la app estaba cerrada, la copia nueva explica la selección cuando la interfaz avisa con `listening` de que ya escucha `explain`; un aviso anterior se perdería. El portal `GlobalShortcuts` (GNOME 48+, KDE) sería la mejora; no se hizo para no añadir `ashpd` ni un `.desktop` registrado.
 - **No se simula Ctrl+C.** En Wayland no se puede, y en X11 no hace falta. La selección sale de:
   - AT-SPI, que dice qué está seleccionado ahora. En una página web solo da el trozo de un párrafo.
   - La selección primaria de X11 (`arboard`), que trae la selección entera pero puede ser antigua (un token seleccionado hace una hora en la terminal).

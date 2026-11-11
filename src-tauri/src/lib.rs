@@ -1269,6 +1269,18 @@ fn shortcuts() -> Shortcuts {
     Shortcuts { explain: explain_key(), snip: cfg!(windows).then_some(SNIP_SHORTCUT_NAME) }
 }
 
+/// Set when this copy was started by `xplainer --explain` (the desktop shortcut, with the app
+/// closed): the selection is explained once the popup listens, or the event would be lost.
+static EXPLAIN_ON_START: AtomicBool = AtomicBool::new(false);
+
+/// The popup is listening for `explain`.
+#[tauri::command]
+fn listening(app: AppHandle) {
+    if EXPLAIN_ON_START.swap(false, Ordering::SeqCst) {
+        explain_in_background(&app);
+    }
+}
+
 /// Explains the selection off the event loop (capturing it waits and sleeps), one at a time.
 fn explain_in_background(app: &AppHandle) {
     if CAPTURING.swap(true, Ordering::SeqCst) {
@@ -1289,6 +1301,7 @@ pub fn run() {
     if !(std::env::args().any(|arg| arg == EXPLAIN_ARG) && linux::already_running()) {
         linux::use_login_path();
     }
+    EXPLAIN_ON_START.store(std::env::args().any(|arg| arg == EXPLAIN_ARG), Ordering::SeqCst);
     let shortcut = Shortcut::new(Some(Modifiers::ALT), Code::KeyX);
     #[cfg(windows)]
     let snip_shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyZ);
@@ -1352,6 +1365,7 @@ pub fn run() {
             write_history,
             set_screen_context,
             shortcuts,
+            listening,
             cancel_answer
         ])
         .on_window_event(|window, event| {

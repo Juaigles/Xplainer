@@ -936,6 +936,9 @@ onMounted(async () => {
   unlistenDeeper = await listen<Selection>("explain-deeper", (event) =>
     explainDeeper(event.payload.text || window.getSelection()?.toString() || ""),
   );
+  // Now Rust may explain the selection that opened the app (`xplainer --explain` with the app
+  // closed): an event sent before this point would be lost.
+  void invoke("listening").catch(() => {});
   void invoke<Shortcuts | null>("shortcuts")
     .then((found) => {
       if (found) shortcuts.value = found;

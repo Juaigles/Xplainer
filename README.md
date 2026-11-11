@@ -64,7 +64,7 @@ Xplainer's core works on Linux: explain the selection, follow-up questions, the 
 How you trigger it depends on your desktop session:
 
 - **X11:** select some text and press <kbd>Alt</kbd>+<kbd>X</kbd>, as on Windows.
-- **Wayland** (the default on recent Ubuntu and Fedora): apps cannot register global shortcuts there. Open your desktop's keyboard settings, add a custom shortcut (for example <kbd>Alt</kbd>+<kbd>X</kbd>) and make it run `xplainer --explain` (with the AppImage, the AppImage's path followed by `--explain`). Xplainer must already be running.
+- **Wayland** (the default on recent Ubuntu and Fedora): apps cannot register global shortcuts there. Open your desktop's keyboard settings, add a custom shortcut (for example <kbd>Alt</kbd>+<kbd>X</kbd>) and make it run `xplainer --explain` (with the AppImage, the AppImage's path followed by `--explain`). If Xplainer is not running, the shortcut starts it and explains the selection.
 
 To start it with your session, tick **Iniciar con la sesión** in the tray menu.
 

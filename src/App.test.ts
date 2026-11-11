@@ -32,6 +32,8 @@ interface Backend {
   history: string | Error;
   /** What `shortcuts` answers; unset, the popup keeps Windows' shortcuts. */
   shortcuts?: { explain: string | null; snip: string | null };
+  /** What Rust explains as soon as the popup listens: the app was opened by `xplainer --explain`. */
+  explainOnStart?: string;
   answer: (prompt: string) => Promise<string>;
   calls: Call[];
 }
@@ -103,6 +105,9 @@ beforeEach(() => {
           return null;
         case "shortcuts":
           return backend.shortcuts ?? null;
+        case "listening":
+          if (backend.explainOnStart) await emit("explain", { text: backend.explainOnStart, window_title: "", context: null });
+          return null;
         case "save_note":
           return (args.existing as string | null) ?? `C:\\Notas\\${args.title}.md`;
         case "ask_claude_code":
@@ -577,6 +582,14 @@ describe("explaining", () => {
     expect(hint).toContain("pulsa tu atajo");
     expect(hint).toContain("xplainer --explain");
     expect(hint).not.toContain("Win+Shift+Z");
+  });
+
+  it("explains the selection that opened the app (xplainer --explain with the app closed)", async () => {
+    backend.explainOnStart = "handshake";
+    const app = await open();
+    await settle();
+    expect(app.find("header .term").text()).toBe("handshake");
+    expect(calls("ask_ollama")).toHaveLength(1);
   });
 });
 
