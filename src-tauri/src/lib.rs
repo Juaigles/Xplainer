@@ -3,16 +3,17 @@ use serde_json::{json, Value};
 use std::{
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, ErrorKind, Read, Write},
-    os::windows::process::CommandExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
         Mutex,
     },
     thread,
     time::{Duration, Instant},
 };
+#[cfg(windows)]
+use std::sync::atomic::AtomicU64;
 use tauri::{
     ipc::Channel,
     menu::{CheckMenuItem, Menu, MenuItem},
@@ -22,6 +23,9 @@ use tauri::{
 use screen_context::ScreenContext;
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+#[cfg(windows)]
 use windows::{
     core::{w, HSTRING},
     Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap},
@@ -45,17 +49,32 @@ use windows::{
     },
 };
 
+#[cfg(target_os = "linux")]
+mod linux;
 mod screen_context;
+#[cfg(target_os = "linux")]
+use linux::{ollama_app_path, open_login, show_error, total_memory_gb};
 
 const SHORTCUT_NAME: &str = "Alt+X";
 
 /// For text that cannot be selected (in an image, a video, a locked PDF): snip it and read it.
+/// Windows only: it uses Windows' snipping tool and OCR.
 const SNIP_SHORTCUT_NAME: &str = "Win+Shift+Z";
+
+/// Run as `xplainer --explain`, it explains the selection like the shortcut: on Wayland, where
+/// apps cannot register global shortcuts, the user binds this command to one in their desktop.
+const EXPLAIN_ARG: &str = "--explain";
+
+#[cfg(windows)]
+const STARTUP_LABEL: &str = "Iniciar con Windows";
+#[cfg(target_os = "linux")]
+const STARTUP_LABEL: &str = "Iniciar con la sesión";
 
 /// Two overlapping captures would race on the clipboard and could lose the user's copied text.
 static CAPTURING: AtomicBool = AtomicBool::new(false);
 /// Numbers each Win+Shift+Z. A snip still waiting gives up when a newer one starts, so pressing
 /// it again after cancelling a snip (Esc) works at once.
+#[cfg(windows)]
 static LATEST_SNIP: AtomicU64 = AtomicU64::new(0);
 
 /// What the popup receives: the selected text, the title of the window it came from and, for
@@ -68,7 +87,9 @@ struct Selection {
 }
 
 /// Hides the console window that Windows would open for a child process.
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(windows)]
 const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
 const OLLAMA_URL: &str = "http://127.0.0.1:11434";
 /// How long a local model stays in memory after its last use. Ollama's default is 5 minutes,
@@ -106,14 +127,30 @@ impl Requests {
 /// `codex` may start through a .cmd launcher (npm, Volta), so killing only our child would
 /// leave the real process running: kill the whole process tree.
 fn kill_tree(child: &mut Child) {
+    #[cfg(windows)]
     let _ = Command::new("taskkill")
         .args(["/PID", &child.id().to_string(), "/T", "/F"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)
         .status();
+    // On Linux the child leads its own process group (`background`): signal the whole group.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// Prepares a child process to run unseen and stoppable: on Windows without a console window; on
+/// Linux in its own process group, so `kill_tree` also reaches what it launches (node → codex).
+fn background(command: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(command, 0);
+    command
 }
 
 impl Answers {
@@ -214,12 +251,11 @@ fn run_cli(
     mut on_event: impl FnMut(&Value, &mut Outcome),
 ) -> Result<String, String> {
     answers.begin(request_id)?;
-    let spawned = command
+    let spawned = background(&mut command)
         .current_dir(std::env::temp_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
         .spawn();
     let mut child = match spawned {
         Ok(child) => child,
@@ -356,12 +392,23 @@ async fn ask_codex(
     .await
 }
 
+/// On Windows through `cmd`, so it also finds a `codex.cmd` launcher (npm, Volta); every argument
+/// must then be a plain word. On Linux the npm launcher is an executable script on the PATH.
+fn codex() -> Command {
+    if cfg!(windows) {
+        let mut command = Command::new("cmd");
+        command.args(["/d", "/c", "codex"]);
+        command
+    } else {
+        Command::new("codex")
+    }
+}
+
 fn codex_command(model: &str, effort: &str) -> Result<Command, String> {
     let effort_setting = format!("model_reasoning_effort={}", plain_word(effort)?);
-    // Through `cmd` so it also finds a `codex.cmd` launcher. Every argument is a plain word.
-    let mut command = Command::new("cmd");
+    let mut command = codex();
     command.args([
-        "/d", "/c", "codex", "exec", "--json", "--ephemeral", "--skip-git-repo-check",
+        "exec", "--json", "--ephemeral", "--skip-git-repo-check",
         // A plain question-answer call: no user config or rules, project instructions,
         // shell, app connectors, writes or web. The selected text is untrusted input.
         "--ignore-user-config", "--ignore-rules", "-s", "read-only",
@@ -578,7 +625,10 @@ fn chat_models(tags: &Value) -> Option<Vec<String>> {
     Some(models.iter().filter(can_chat).filter_map(|model| model["name"].as_str().map(String::from)).collect())
 }
 
+#[cfg(windows)]
 const OLLAMA_DOWNLOAD_URL: &str = "https://ollama.com/download/windows";
+#[cfg(target_os = "linux")]
+const OLLAMA_DOWNLOAD_URL: &str = "https://ollama.com/download/linux";
 
 /// What the first-run assistant needs to know about this computer.
 #[derive(Serialize)]
@@ -595,6 +645,7 @@ struct Setup {
 
 /// Ollama's tray app, which starts its server: in the installer's default folder, or next to
 /// the `ollama.exe` on the PATH when it was installed elsewhere (installer `/DIR=...`).
+#[cfg(windows)]
 fn ollama_app_path() -> Option<PathBuf> {
     let default = PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
         .join("Programs")
@@ -614,16 +665,28 @@ fn ollama_app_path() -> Option<PathBuf> {
     app.exists().then_some(app)
 }
 
+#[cfg(target_os = "linux")]
 fn on_path(program: &str) -> bool {
-    Command::new("where")
+    linux::find_program(program).is_some()
+}
+
+#[cfg(windows)]
+fn on_path(program: &str) -> bool {
+    background(&mut Command::new("where"))
         .arg(program)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
         .status()
         .is_ok_and(|status| status.success())
 }
 
+/// Opens a web address in the default browser, with no shell to interpret it.
+fn open_url(url: &str) -> Result<(), String> {
+    let opener = if cfg!(windows) { "explorer" } else { "xdg-open" };
+    Command::new(opener).arg(url).spawn().map(|_| ()).map_err(|error| error.to_string())
+}
+
+#[cfg(windows)]
 fn total_memory_gb() -> u64 {
     let mut memory = MEMORYSTATUSEX { dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
     match unsafe { GlobalMemoryStatusEx(&mut memory) } {
@@ -656,10 +719,10 @@ async fn check_setup() -> Result<Setup, String> {
             ollama_installed: models.is_some() || ollama_app_path().is_some(),
             ollama_running: models.is_some(),
             ollama_models: models.unwrap_or_default(),
-            // Exactly what `ask_*` can launch: `claude` must be the native `claude.exe` (an npm
-            // `claude.cmd` would be found by `where claude` but cannot be started directly);
-            // `codex` goes through `cmd`, which also finds a `codex.cmd`.
-            clis: [("claude", "claude.exe"), ("codex", "codex")]
+            // Exactly what `ask_*` can launch. On Windows `claude` must be the native
+            // `claude.exe` (an npm `claude.cmd` would be found by `where claude` but cannot be
+            // started directly); `codex` goes through `cmd`, which also finds a `codex.cmd`.
+            clis: [("claude", if cfg!(windows) { "claude.exe" } else { "claude" }), ("codex", "codex")]
                 .into_iter()
                 .filter(|(_, program)| on_path(program))
                 .map(|(cli, _)| cli.to_string())
@@ -675,15 +738,21 @@ async fn check_setup() -> Result<Setup, String> {
 /// Opens Ollama's official download page; the user installs it from there.
 #[tauri::command]
 fn open_ollama_download() -> Result<(), String> {
-    // explorer.exe opens a URL in the default browser, with no shell to interpret it.
-    Command::new("explorer").arg(OLLAMA_DOWNLOAD_URL).spawn().map(|_| ()).map_err(|error| error.to_string())
+    open_url(OLLAMA_DOWNLOAD_URL)
 }
 
 /// Starts Ollama when it is installed but closed (it normally starts with Windows).
+#[cfg(windows)]
 #[tauri::command]
 fn start_ollama() -> Result<(), String> {
     let app = ollama_app_path().ok_or("No encuentro la app de Ollama. Ábrela desde el menú Inicio.")?;
     Command::new(app).spawn().map(|_| ()).map_err(|error| format!("No se pudo abrir Ollama: {error}"))
+}
+
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn start_ollama() -> Result<(), String> {
+    linux::start_ollama()
 }
 
 /// Subscriptions signed in, so they answer with the user's plan: "claude", "codex".
@@ -693,8 +762,8 @@ async fn check_accounts() -> Result<Vec<String>, String> {
         let mut claude = Command::new("claude");
         // As when asking: without the API keys, so the status is the subscription's.
         claude.args(["auth", "status", "--json"]).env_remove("ANTHROPIC_API_KEY").env_remove("ANTHROPIC_AUTH_TOKEN");
-        let mut codex = Command::new("cmd");
-        codex.args(["/d", "/c", "codex", "login", "status"]).env_remove("CODEX_API_KEY");
+        let mut codex = codex();
+        codex.args(["login", "status"]).env_remove("CODEX_API_KEY");
         // At the same time: each may wait on the network to refresh its login.
         let timeout = Duration::from_secs(10);
         let claude = thread::spawn(move || status_output(claude, timeout));
@@ -717,11 +786,10 @@ async fn check_accounts() -> Result<Vec<String>, String> {
 /// the first-run choice would stay "checking" forever. Its output is a few lines, well within
 /// the pipe buffer, so waiting before reading cannot block the command.
 fn status_output(mut command: Command, timeout: Duration) -> Option<std::process::Output> {
-    let mut child = command
+    let mut child = background(&mut command)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .ok()?;
     let deadline = Instant::now() + timeout;
@@ -757,6 +825,11 @@ fn sign_in(cli: String) -> Result<(), String> {
         "codex" => &["codex", "login"],
         _ => return Err(format!("No sé iniciar sesión en «{cli}».")),
     };
+    open_login(login)
+}
+
+#[cfg(windows)]
+fn open_login(login: &[&str]) -> Result<(), String> {
     Command::new("cmd")
         .args(["/d", "/c"])
         .args(login)
@@ -775,7 +848,7 @@ fn open_install_page(cli: String) -> Result<(), String> {
         "codex" => "https://developers.openai.com/codex/cli",
         _ => return Err(format!("No conozco «{cli}».")),
     };
-    Command::new("explorer").arg(url).spawn().map(|_| ()).map_err(|error| error.to_string())
+    open_url(url)
 }
 
 /// Downloads a model into Ollama, reporting progress (bytes done and total) as it goes.
@@ -898,6 +971,7 @@ fn note_name(title: &str) -> String {
     }
 }
 
+#[cfg(windows)]
 fn foreground_window_title() -> String {
     let mut buffer = [0u16; 512];
     let len = unsafe { GetWindowTextW(GetForegroundWindow(), &mut buffer) };
@@ -906,6 +980,7 @@ fn foreground_window_title() -> String {
 
 /// The user is still holding the shortcut keys; a Ctrl+C sent now would arrive as Win+Alt+Ctrl+C.
 /// Returns false if they are still held after the deadline.
+#[cfg(windows)]
 fn wait_for_modifiers_release() -> bool {
     let modifiers = [VK_LWIN, VK_RWIN, VK_MENU, VK_SHIFT, VK_CONTROL];
     let deadline = Instant::now() + Duration::from_millis(3000);
@@ -921,6 +996,7 @@ fn wait_for_modifiers_release() -> bool {
     false
 }
 
+#[cfg(windows)]
 fn key_input(key: VIRTUAL_KEY, up: bool) -> INPUT {
     INPUT {
         r#type: INPUT_KEYBOARD,
@@ -934,6 +1010,7 @@ fn key_input(key: VIRTUAL_KEY, up: bool) -> INPUT {
     }
 }
 
+#[cfg(windows)]
 fn send_ctrl_c() {
     let inputs = [
         key_input(VK_CONTROL, false),
@@ -947,6 +1024,7 @@ fn send_ctrl_c() {
 /// The shortcut swallows the X, so if Alt is released first the source app sees Alt pressed
 /// alone and opens its menu, which would eat our Ctrl+C. Tapping an unassigned key while Alt
 /// is still held prevents that (the "menu mask" trick AutoHotkey uses).
+#[cfg(windows)]
 fn mask_alt_menu() {
     let unassigned = VIRTUAL_KEY(0xE8);
     let inputs = [key_input(unassigned, false), key_input(unassigned, true)];
@@ -955,6 +1033,7 @@ fn mask_alt_menu() {
 
 /// Windows has no universal "read the selection" API, so we copy it with a simulated
 /// Ctrl+C and then put the previous clipboard text back.
+#[cfg(windows)]
 fn capture_selection() -> String {
     let Ok(mut clipboard) = arboard::Clipboard::new() else {
         return String::new();
@@ -1001,6 +1080,7 @@ fn show_popup_near_cursor(app: &AppHandle) {
     let _ = window.set_focus();
 }
 
+#[cfg(windows)]
 fn explain_selection(app: &AppHandle) {
     mask_alt_menu();
     let window_title = foreground_window_title();
@@ -1026,6 +1106,7 @@ fn explain_selection(app: &AppHandle) {
 /// Opens Windows' snipping tool and waits for the snip it copies to the clipboard, which keeps it
 /// as Win+Shift+S would. `None` if the user cancels (nothing arrives in 30 seconds or a newer
 /// snip starts) or copies something else meanwhile.
+#[cfg(windows)]
 fn snip_screen(snip: u64) -> Option<arboard::ImageData<'static>> {
     let mut clipboard = arboard::Clipboard::new().ok()?;
     let sequence_before = unsafe { GetClipboardSequenceNumber() };
@@ -1042,6 +1123,7 @@ fn snip_screen(snip: u64) -> Option<arboard::ImageData<'static>> {
 }
 
 /// Reads the text in an image with the OCR built into Windows, keeping its lines.
+#[cfg(windows)]
 fn recognize_text(image: &arboard::ImageData) -> windows::core::Result<String> {
     let mut pixels = image.bytes.to_vec();
     for pixel in pixels.as_chunks_mut::<4>().0 {
@@ -1067,6 +1149,7 @@ fn recognize_text(image: &arboard::ImageData) -> windows::core::Result<String> {
 
 /// The OCR splits a line where it sees a wide gap (common in code) and may list the halves out of
 /// order: join the pieces that share a row, left to right, and the rows top to bottom.
+#[cfg(windows)]
 fn rows(mut lines: Vec<(f32, f32, f32, String)>) -> String {
     lines.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut rows: Vec<(f32, Vec<(f32, String)>)> = Vec::new(); // (middle, pieces)
@@ -1083,6 +1166,7 @@ fn rows(mut lines: Vec<(f32, f32, f32, String)>) -> String {
     joined.collect::<Vec<_>>().join("\n")
 }
 
+#[cfg(windows)]
 fn explain_snip(app: &AppHandle, snip: u64) {
     let window_title = foreground_window_title();
     let Some(image) = snip_screen(snip) else {
@@ -1108,6 +1192,7 @@ fn set_screen_context(enabled: bool) {
     screen_context::ENABLED.store(enabled, Ordering::SeqCst);
 }
 
+#[cfg(windows)]
 fn popup_is_foreground(app: &AppHandle) -> bool {
     let foreground = unsafe { GetForegroundWindow() };
     app.get_webview_window("main")
@@ -1115,7 +1200,33 @@ fn popup_is_foreground(app: &AppHandle) -> bool {
         .is_some_and(|popup| std::ptr::eq(popup.0, foreground.0))
 }
 
+#[cfg(target_os = "linux")]
+fn popup_is_foreground(app: &AppHandle) -> bool {
+    app.get_webview_window("main").is_some_and(|window| window.is_focused().unwrap_or(false))
+}
+
+/// On Linux nothing is copied: on Wayland no app may fake a Ctrl+C, and X11 keeps the selection
+/// readable anyway. The accessibility bus says what is selected now, and the PRIMARY selection
+/// completes it (`linux::current_selection`).
+#[cfg(target_os = "linux")]
+fn explain_selection(app: &AppHandle) {
+    if popup_is_foreground(app) {
+        // A word selected in an answer: the popup reads its own selection and goes one level deeper.
+        let _ = app.emit("explain-deeper", Selection { text: String::new(), window_title: String::new(), context: None });
+        return;
+    }
+    let window = screen_context::start().and_then(|pending| pending.finish());
+    let (window_title, seen, context) = match window {
+        Some(window) => (window.title, window.selected, window.context),
+        None => (String::new(), linux::Selected::Unknown, None),
+    };
+    let text = linux::current_selection(seen, linux::primary_selection());
+    let _ = app.emit("explain", Selection { text, window_title, context });
+    show_popup_near_cursor(app);
+}
+
 /// The installed app has no console, so errors must be shown in a window.
+#[cfg(windows)]
 fn show_error(message: &str) {
     unsafe {
         MessageBoxW(None, &HSTRING::from(message), w!("Xplainer"), MB_OK | MB_ICONERROR);
@@ -1132,19 +1243,65 @@ fn toggle_autostart<R: Runtime>(app: &AppHandle<R>, item: &CheckMenuItem<R>) {
     };
     let _ = item.set_checked(autolaunch.is_enabled().unwrap_or(false));
     if let Err(error) = result {
-        show_error(&format!("No se pudo cambiar el inicio con Windows.\n\n{error}"));
+        show_error(&format!("No se pudo cambiar «{STARTUP_LABEL}».\n\n{error}"));
     }
+}
+
+/// The key that explains a selection, or `None` on Wayland, which lets no app register a global
+/// shortcut: there the user binds `xplainer --explain` to one in their desktop's settings.
+fn explain_key() -> Option<&'static str> {
+    #[cfg(target_os = "linux")]
+    if linux::is_wayland() {
+        return None;
+    }
+    Some(SHORTCUT_NAME)
+}
+
+/// The shortcuts this computer has, for the popup's hints.
+#[derive(Serialize)]
+struct Shortcuts {
+    explain: Option<&'static str>,
+    snip: Option<&'static str>,
+}
+
+#[tauri::command]
+fn shortcuts() -> Shortcuts {
+    Shortcuts { explain: explain_key(), snip: cfg!(windows).then_some(SNIP_SHORTCUT_NAME) }
+}
+
+/// Explains the selection off the event loop (capturing it waits and sleeps), one at a time.
+fn explain_in_background(app: &AppHandle) {
+    if CAPTURING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    thread::spawn(move || {
+        explain_selection(&app);
+        CAPTURING.store(false, Ordering::SeqCst);
+    });
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Before any other thread starts: it changes this process's environment. Not when this copy
+    // only hands `--explain` to the one running: the shell would make the shortcut wait.
+    #[cfg(target_os = "linux")]
+    if !(std::env::args().any(|arg| arg == EXPLAIN_ARG) && linux::already_running()) {
+        linux::use_login_path();
+    }
     let shortcut = Shortcut::new(Some(Modifiers::ALT), Code::KeyX);
+    #[cfg(windows)]
     let snip_shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyZ);
 
     tauri::Builder::default()
         // First plugin, as its docs require: launching the app again (e.g. from the Start menu)
         // just opens the popup of the copy already running.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // `xplainer --explain`, from a desktop shortcut: explain the selection.
+            if args.iter().any(|arg| arg == EXPLAIN_ARG) {
+                explain_in_background(app);
+                return;
+            }
             // Already on screen: just bring it forward and keep the conversation.
             if let Some(window) = app.get_webview_window("main") {
                 if window.is_visible().unwrap_or(false) {
@@ -1160,17 +1317,14 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, pressed, event| {
-                    if pressed == &shortcut
-                        && event.state() == ShortcutState::Pressed
-                        && !CAPTURING.swap(true, Ordering::SeqCst)
-                    {
-                        let app = app.clone();
-                        // Off the event loop: capturing the selection waits and sleeps.
-                        thread::spawn(move || {
-                            explain_selection(&app);
-                            CAPTURING.store(false, Ordering::SeqCst);
-                        });
-                    } else if pressed == &snip_shortcut && event.state() == ShortcutState::Pressed {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    if pressed == &shortcut {
+                        explain_in_background(app);
+                    }
+                    #[cfg(windows)]
+                    if pressed == &snip_shortcut {
                         let snip = LATEST_SNIP.fetch_add(1, Ordering::SeqCst) + 1;
                         let app = app.clone();
                         // Off the event loop: it waits for the user to snip.
@@ -1197,6 +1351,7 @@ pub fn run() {
             read_history,
             write_history,
             set_screen_context,
+            shortcuts,
             cancel_answer
         ])
         .on_window_event(|window, event| {
@@ -1207,13 +1362,16 @@ pub fn run() {
             }
         })
         .setup(move |app| {
-            if let Err(error) = app.global_shortcut().register(shortcut) {
-                show_error(&format!(
-                    "No se pudo registrar el atajo {SHORTCUT_NAME}. Puede que otra app lo esté usando.\n\n{error}"
-                ));
-                return Err(error.into());
+            if explain_key().is_some() {
+                if let Err(error) = app.global_shortcut().register(shortcut) {
+                    show_error(&format!(
+                        "No se pudo registrar el atajo {SHORTCUT_NAME}. Puede que otra app lo esté usando.\n\n{error}"
+                    ));
+                    return Err(error.into());
+                }
             }
             // Not essential: without it, Alt+X still works.
+            #[cfg(windows)]
             if let Err(error) = app.global_shortcut().register(snip_shortcut) {
                 show_error(&format!(
                     "No se pudo registrar el atajo {SNIP_SHORTCUT_NAME} para explicar el texto de un recorte. Puede que otra app lo esté usando; {SHORTCUT_NAME} sigue funcionando.\n\n{error}"
@@ -1224,17 +1382,21 @@ pub fn run() {
             // Not from a dev build: it would register the dev executable under the same name.
             let installed = !cfg!(debug_assertions);
             let starts_with_windows = app.autolaunch().is_enabled().unwrap_or(false);
-            let label = if installed { "Iniciar con Windows" } else { "Iniciar con Windows (solo en la app instalada)" };
+            let label =
+                if installed { STARTUP_LABEL.to_string() } else { format!("{STARTUP_LABEL} (solo en la app instalada)") };
             let autostart = CheckMenuItem::with_id(
                 app, "autostart", label, installed, starts_with_windows, None::<&str>,
             )?;
             let quit = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&autostart, &quit])?;
+            let how = match explain_key() {
+                Some(key) => format!("pulsa {key}"),
+                None => format!("pulsa el atajo que ejecuta «xplainer {EXPLAIN_ARG}»"),
+            };
+            let snip = if cfg!(windows) { format!(", o recórtalo con {SNIP_SHORTCUT_NAME}") } else { String::new() };
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip(format!(
-                    "Xplainer: selecciona un texto y pulsa {SHORTCUT_NAME}, o recórtalo con {SNIP_SHORTCUT_NAME}"
-                ))
+                .tooltip(format!("Xplainer: selecciona un texto y {how}{snip}"))
                 .menu(&menu)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     "autostart" => toggle_autostart(app, &autostart),

@@ -23,10 +23,22 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-global-shortcut = "2.4.1"
 arboard = "3.7.0"
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_System_SystemInformation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_UI_Accessibility", "Win32_System_Com", "Win32_System_Threading", "Foundation", "Graphics_Imaging", "Media_Ocr", "Storage_Streams"] }
 ureq = { version = "3.5.1", default-features = false, features = ["json"] }
 tauri-plugin-autostart = "2.7.0"
 tauri-plugin-single-instance = "2.5.5"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_System_SystemInformation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_UI_Accessibility", "Win32_System_Com", "Win32_System_Threading", "Foundation", "Graphics_Imaging", "Media_Ocr", "Storage_Streams"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The PRIMARY selection on Wayland desktops with the data-control protocol (KDE, Sway...).
+arboard = { version = "3.7.0", features = ["wayland-data-control"] }
+# The window's context and selection, through the accessibility bus (AT-SPI over D-Bus).
+atspi = "0.30"
+zbus = "5"
+# Already in Tauri's tree on Linux: killing a process group, and an error dialog.
+libc = "0.2"
+gtk = "0.18"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

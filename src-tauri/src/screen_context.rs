@@ -1,9 +1,11 @@
-//! Reads with UI Automation where the selected text was: the app, the page address and the text
-//! around it. A word alone ("negotiations") is ambiguous; its surroundings rarely are.
+//! Reads where the selected text was: the app, the page address and the text around it. A word
+//! alone ("negotiations") is ambiguous; its surroundings rarely are. With UI Automation on
+//! Windows; with the accessibility bus (AT-SPI) on Linux, in `screen_context/linux.rs`.
 
 use serde::Serialize;
+#[cfg(windows)]
+use std::ffi::c_void;
 use std::{
-    ffi::c_void,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver},
@@ -11,6 +13,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+#[cfg(windows)]
 use windows::{
     core::{BSTR, PWSTR},
     Win32::{
@@ -28,6 +31,9 @@ use windows::{
     },
 };
 
+#[cfg(target_os = "linux")]
+mod linux;
+
 /// "Usar el contexto de la ventana" in the settings; the popup sets it at start.
 pub static ENABLED: AtomicBool = AtomicBool::new(true);
 
@@ -36,13 +42,16 @@ const MAX_CHARS: usize = 1500;
 /// Lines read before and after the selection.
 const LINES_AROUND: i32 = 8;
 /// Names read in all near the cursor when there is no text to read around.
+#[cfg(windows)]
 const MAX_ELEMENTS: i32 = 200;
 /// A busy or hung app answers UI Automation slowly: explain without context rather than wait.
 const TIMEOUT: Duration = Duration::from_millis(800);
 /// The most each UI Automation call may wait for the app (its defaults are 2 and 20 seconds).
+#[cfg(windows)]
 const CALL_TIMEOUT_MS: u32 = 700;
 /// How long a Chromium window takes to build its accessibility tree after the first question
 /// (measured: an empty pane at once, the page 300 ms later).
+#[cfg(windows)]
 const CHROMIUM_WAKE_UP: Duration = Duration::from_millis(300);
 /// A read that is still running, stuck in a hung app: no new one starts until it ends, so
 /// pressing Alt+X again and again cannot pile up threads.
@@ -60,34 +69,51 @@ pub struct ScreenContext {
 }
 
 /// A read started when the shortcut was pressed; it runs while the selection is copied.
-pub struct Pending {
+pub struct Pending<T> {
     started: Instant,
-    result: Receiver<Option<ScreenContext>>,
+    result: Receiver<Option<T>>,
 }
 
 /// Starts reading `window`, the one the text was selected in, on its own thread.
-pub fn start(window: HWND) -> Option<Pending> {
-    if !ENABLED.load(Ordering::SeqCst) || READING.swap(true, Ordering::SeqCst) {
+#[cfg(windows)]
+pub fn start(window: HWND) -> Option<Pending<ScreenContext>> {
+    if !ENABLED.load(Ordering::SeqCst) {
         return None;
     }
     let raw = window.0 as isize; // A window handle is just a number, but HWND is not Send.
+    spawn_read(move || read(HWND(raw as *mut c_void)))
+}
+
+/// Starts reading the active window on its own thread: its title and selection always (the
+/// title decides what the history keeps), its context only if the settings allow it.
+#[cfg(target_os = "linux")]
+pub fn start() -> Option<Pending<linux::Window>> {
+    let with_context = ENABLED.load(Ordering::SeqCst);
+    spawn_read(move || linux::read(with_context))
+}
+
+fn spawn_read<T: Send + 'static>(read: impl FnOnce() -> Option<T> + Send + 'static) -> Option<Pending<T>> {
+    if READING.swap(true, Ordering::SeqCst) {
+        return None;
+    }
     let (sender, result) = mpsc::channel();
     thread::spawn(move || {
-        let context = read(HWND(raw as *mut c_void));
+        let found = read();
         READING.store(false, Ordering::SeqCst);
-        let _ = sender.send(context);
+        let _ = sender.send(found);
     });
     Some(Pending { started: Instant::now(), result })
 }
 
-impl Pending {
-    /// The context, or `None` if it found nothing useful or did not finish in time.
-    pub fn finish(self) -> Option<ScreenContext> {
+impl<T> Pending<T> {
+    /// What was read, or `None` if it found nothing useful or did not finish in time.
+    pub fn finish(self) -> Option<T> {
         let left = TIMEOUT.saturating_sub(self.started.elapsed());
         self.result.recv_timeout(left).ok().flatten()
     }
 }
 
+#[cfg(windows)]
 fn read(window: HWND) -> Option<ScreenContext> {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -97,6 +123,7 @@ fn read(window: HWND) -> Option<ScreenContext> {
     }
 }
 
+#[cfg(windows)]
 unsafe fn read_with_com(window: HWND) -> Option<ScreenContext> {
     unsafe {
         let deadline = Instant::now() + TIMEOUT;
@@ -152,22 +179,26 @@ unsafe fn read_with_com(window: HWND) -> Option<ScreenContext> {
     }
 }
 
+#[cfg(windows)]
 fn text(value: windows::core::Result<BSTR>) -> String {
     value.map(|b| b.to_string()).unwrap_or_default()
 }
 
 /// Chrome, Edge and Electron apps all draw their windows with this class.
+#[cfg(windows)]
 fn is_chromium(window: HWND) -> bool {
     let mut buffer = [0u16; 64];
     let len = unsafe { GetClassNameW(window, &mut buffer) };
     String::from_utf16_lossy(&buffer[..len.max(0) as usize]).starts_with("Chrome_WidgetWin_")
 }
 
+#[cfg(windows)]
 fn is_document(element: &IUIAutomationElement) -> bool {
     unsafe { element.CurrentControlType() }.is_ok_and(|kind| kind == UIA_DocumentControlTypeId)
 }
 
 /// The element itself or its closest ancestor that is a document (a web page, a Word file).
+#[cfg(windows)]
 fn document_of(walker: &IUIAutomationTreeWalker, element: &IUIAutomationElement) -> Option<IUIAutomationElement> {
     let mut element = element.clone();
     for _ in 0..40 {
@@ -180,6 +211,7 @@ fn document_of(walker: &IUIAutomationTreeWalker, element: &IUIAutomationElement)
 }
 
 /// The selection with a few lines before and after, from the closest element that exposes text.
+#[cfg(windows)]
 fn text_around_selection(walker: &IUIAutomationTreeWalker, focused: &IUIAutomationElement) -> Option<String> {
     unsafe {
         let mut element = focused.clone();
@@ -221,6 +253,7 @@ fn text_around_selection(walker: &IUIAutomationTreeWalker, focused: &IUIAutomati
 /// below the page or document it is in: the whole page would start with its menus, which say
 /// nothing about the selection. Nothing outside a document, at most `MAX_ELEMENTS`, and only
 /// until `deadline`, when the caller has stopped waiting anyway.
+#[cfg(windows)]
 fn names_near(
     automation: &IUIAutomation,
     walker: &IUIAutomationTreeWalker,
@@ -263,6 +296,7 @@ fn names_near(
     (!joined.is_empty()).then_some(joined)
 }
 
+#[cfg(windows)]
 fn process_name(pid: u32) -> String {
     unsafe {
         let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
@@ -336,6 +370,7 @@ pub(crate) fn clean_around(before: &str, selected: &str, after: &str) -> String 
 }
 
 /// Names in order, without empty or repeated neighbours, cut to `MAX_CHARS`.
+#[cfg_attr(not(windows), allow(dead_code))] // Only Windows reads the names near the cursor.
 pub(crate) fn clean_names(names: &[String]) -> String {
     let mut kept: Vec<String> = Vec::new();
     for name in names.iter().map(|name| clean_line(name)) {

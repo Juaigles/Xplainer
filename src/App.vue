@@ -152,6 +152,15 @@ const screenContextEnabled = ref(stored(SCREEN_CONTEXT_KEY, "true") === "true");
 const sentContext = ref<string[]>([]);
 /** "chrome · example.com": where `sentContext` came from. */
 const contextLabel = ref("");
+
+/** The shortcuts this computer has: on Wayland none for explaining (the user binds one in the
+ * desktop), and the snip only on Windows. Windows' until Rust says otherwise. */
+interface Shortcuts {
+  explain: string | null;
+  snip: string | null;
+}
+const shortcuts = ref<Shortcuts>({ explain: "Alt+X", snip: "Win+Shift+Z" });
+const explainKey = computed(() => shortcuts.value.explain ?? "tu atajo");
 const entries = ref<HistoryEntry[]>([]);
 const historyQuery = ref("");
 const confirmClear = ref(false);
@@ -922,8 +931,16 @@ onMounted(async () => {
   window.addEventListener("keydown", onKeydown);
   // Listen first: a shortcut pressed while Ollama is slow to answer must not be lost.
   unlistenExplain = await listen<Selection>("explain", (event) => start(event.payload));
-  // The shortcut pressed inside this popup, on a word of an answer.
-  unlistenDeeper = await listen<Selection>("explain-deeper", (event) => explainDeeper(event.payload.text));
+  // The shortcut pressed inside this popup, on a word of an answer. Linux sends no text: the
+  // popup reads its own selection, which Wayland would not let Rust read.
+  unlistenDeeper = await listen<Selection>("explain-deeper", (event) =>
+    explainDeeper(event.payload.text || window.getSelection()?.toString() || ""),
+  );
+  void invoke<Shortcuts | null>("shortcuts")
+    .then((found) => {
+      if (found) shortcuts.value = found;
+    })
+    .catch(() => {});
   // Win+Shift+Z found no text in the snip: the popup opens empty, saying so.
   unlistenSnipFailed = await listen<string>("snip-failed", (event) => {
     start({ text: "", window_title: "" });
@@ -999,7 +1016,7 @@ onUnmounted(() => {
       </p>
       <label class="check"><input v-model="screenContextEnabled" type="checkbox" /> Usar el contexto de la ventana</label>
       <p class="notice">
-        Con Alt+X, además de lo que selecciones, se envía al modelo la app, la dirección de la página y el texto de
+        Con {{ explainKey }}, además de lo que selecciones, se envía al modelo la app, la dirección de la página y el texto de
         alrededor, para que elija el significado que toca. Lo enviado aparece en «Contexto» encima de la respuesta.
       </p>
       <label>
@@ -1089,8 +1106,14 @@ onUnmounted(() => {
         </template>
       </div>
       <p v-else-if="!term && !onboarding" class="notice">
-        Selecciona un texto en cualquier app y pulsa Alt+X, o escribe abajo qué quieres que te explique. Si el texto no
-        se puede seleccionar (en una imagen, un vídeo…), pulsa Win+Shift+Z y recórtalo.
+        Selecciona un texto en cualquier app y pulsa {{ explainKey }}, o escribe abajo qué quieres que te explique.
+        <template v-if="shortcuts.snip">
+          Si el texto no se puede seleccionar (en una imagen, un vídeo…), pulsa {{ shortcuts.snip }} y recórtalo.
+        </template>
+        <template v-if="!shortcuts.explain">
+          En Wayland, crea en los ajustes de teclado de tu escritorio un atajo que ejecute
+          <code>xplainer --explain</code>.
+        </template>
       </p>
 
       <template v-for="(entry, index) in chat" :key="index">

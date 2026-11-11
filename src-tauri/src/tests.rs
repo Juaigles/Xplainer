@@ -174,9 +174,12 @@ fn an_answer_from_a_process_that_failed_is_not_trusted() {
 #[test]
 fn run_cli_reads_a_real_process_and_returns_its_answer() {
     let answers = Answers::default();
-    // `type` prints the recorded output: it plays the CLI, through a real child process.
-    let mut command = Command::new("cmd");
-    command.args(["/d", "/c", "type"]).arg(fixture("codex-stream.jsonl"));
+    // `type` (`cat` on Linux) prints the recorded output: it plays the CLI, through a real child process.
+    let mut command = if cfg!(windows) { Command::new("cmd") } else { Command::new("cat") };
+    if cfg!(windows) {
+        command.args(["/d", "/c", "type"]);
+    }
+    command.arg(fixture("codex-stream.jsonl"));
     let answer = run_cli(&answers, 1, command, "prompt", "Codex", |event, outcome| {
         on_codex_event(event, outcome, &mut |_| {})
     });
@@ -213,6 +216,7 @@ fn a_newer_request_replaces_the_older_one() {
 }
 
 #[test]
+#[cfg(windows)]
 fn cancelling_kills_the_running_process() {
     let answers = Answers::default();
     answers.begin(1).unwrap();
@@ -231,6 +235,34 @@ fn cancelling_kills_the_running_process() {
         .map(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
         .unwrap();
     assert!(!still_there, "the process must be gone after cancel");
+    assert!(answers.finish(1).is_err());
+}
+
+/// A CLI launched through a script (node → codex) leaves its own child: cancelling must stop it too.
+#[test]
+#[cfg(target_os = "linux")]
+fn cancelling_kills_the_running_process_and_its_children() {
+    let answers = Answers::default();
+    answers.begin(1).unwrap();
+    let mut child = background(Command::new("sh").args(["-c", "sleep 30 & echo $!; wait"]))
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+    let grandchild: u32 = line.trim().parse().unwrap();
+    answers.attach(1, child).unwrap();
+    answers.cancel(1);
+    // Dead, or a zombie waiting for init to collect it: either way it no longer runs.
+    let running = |pid: u32| {
+        fs::read_to_string(format!("/proc/{pid}/stat"))
+            .is_ok_and(|stat| stat.rsplit(')').next().is_some_and(|rest| !rest.trim_start().starts_with('Z')))
+    };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while running(grandchild) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!running(grandchild), "the grandchild must be gone after cancel");
     assert!(answers.finish(1).is_err());
 }
 
@@ -363,6 +395,7 @@ fn history_starts_empty_and_is_replaced_whole() {
 // --- OCR --------------------------------------------------------------------------------------
 
 #[test]
+#[cfg(windows)]
 fn ocr_rows_join_pieces_of_the_same_line_in_order() {
     let lines = vec![
         (80.0, 100.0, 20.0, "TypeError".to_string()),
@@ -374,6 +407,7 @@ fn ocr_rows_join_pieces_of_the_same_line_in_order() {
 }
 
 #[test]
+#[cfg(windows)]
 fn ocr_reads_text_and_code_from_an_image() {
     // Uses the OCR built into Windows with the user's display languages.
     let png = image::open(fixture("ocr-sample.png")).unwrap().to_rgba8();
@@ -454,14 +488,17 @@ fn real_accounts_are_detected() {
 
 #[test]
 fn a_status_command_that_hangs_is_given_up() {
-    let mut slow = Command::new("ping");
-    slow.args(["-n", "30", "127.0.0.1"]);
+    let mut slow = if cfg!(windows) { Command::new("ping") } else { Command::new("sleep") };
+    slow.args(if cfg!(windows) { &["-n", "30", "127.0.0.1"][..] } else { &["30"][..] });
     let started = Instant::now();
     assert!(status_output(slow, Duration::from_millis(500)).is_none());
     assert!(started.elapsed() < Duration::from_secs(5));
 
-    let mut quick = Command::new("cmd");
-    quick.args(["/d", "/c", "echo", "Logged in using ChatGPT"]);
+    let mut quick = if cfg!(windows) { Command::new("cmd") } else { Command::new("echo") };
+    if cfg!(windows) {
+        quick.args(["/d", "/c", "echo"]);
+    }
+    quick.arg("Logged in using ChatGPT");
     let output = status_output(quick, Duration::from_secs(10)).expect("a quick command finishes");
     assert!(codex_uses_subscription(&output.stdout, &output.stderr));
 }
@@ -529,4 +566,55 @@ fn clean_names_skips_empty_and_repeated_neighbours() {
     let names = ["Negotiations", "", "Negotiations", "\u{F0B0} Filter", "Status", "Negotiations"].map(String::from);
     assert_eq!(clean_names(&names), "Negotiations | Filter | Status | Negotiations");
     assert!(clean_names(&[String::from("x").repeat(5000)]).chars().count() == 1500);
+}
+
+// --- Linux ------------------------------------------------------------------------------------
+
+#[test]
+#[cfg(target_os = "linux")]
+fn linux_uses_the_whole_primary_selection_only_when_it_is_current() {
+    use linux::{current_selection, Selected};
+    let seen = |value: &str| Selected::Text(value.to_string());
+    let text = |value: &str| Some(value.to_string());
+    // The bus saw one paragraph of a longer selection: PRIMARY has all of it.
+    assert_eq!(current_selection(seen("TCP"), text("el protocolo TCP\ny UDP")), "el protocolo TCP\ny UDP");
+    // The same text, with its lines broken elsewhere.
+    assert_eq!(current_selection(seen("un protocolo\nde transporte"), text("Es un protocolo de transporte.")), "Es un protocolo de transporte.");
+    // PRIMARY is an older selection: what the bus sees now wins.
+    assert_eq!(current_selection(seen("TCP"), text("texto de antes")), "TCP");
+    // The app says nothing is selected: an old PRIMARY (a token, say) is never sent.
+    assert_eq!(current_selection(Selected::Nothing, text("token-de-antes")), "");
+    // An app that cannot tell the bus anything: PRIMARY alone.
+    assert_eq!(current_selection(Selected::Unknown, text("texto")), "texto");
+    assert_eq!(current_selection(Selected::Unknown, None), "");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn linux_finds_programs_on_the_path_without_which() {
+    assert!(linux::find_program("sh").is_some_and(|path| path.is_absolute()));
+    assert!(linux::find_program("no-such-program-xplainer").is_none());
+}
+
+/// `xplainer --explain` asks the bus for the plugin's name before reading the shell's PATH:
+/// it must follow the app's identifier.
+#[test]
+#[cfg(target_os = "linux")]
+fn linux_single_instance_name_follows_the_identifier() {
+    let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+    let identifier = config["identifier"].as_str().unwrap();
+    assert_eq!(linux::SINGLE_INSTANCE_NAME, format!("{identifier}.SingleInstance"));
+}
+
+/// Reads the window that has the focus, as Alt+X does: run it with a window open and some text
+/// selected in it (a GTK editor, say). It prints what it found.
+#[test]
+#[ignore]
+#[cfg(target_os = "linux")]
+fn real_linux_window_is_read() {
+    let window = screen_context::start().and_then(|pending| pending.finish()).expect("read the active window");
+    println!("title: {:?}", window.title);
+    println!("selected: {:?}", window.selected);
+    println!("context: {:?}", window.context);
+    assert!(!window.title.is_empty());
 }

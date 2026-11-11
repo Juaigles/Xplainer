@@ -1,6 +1,6 @@
 # Xplainer: notas para agentes
 
-App de bandeja para Windows (Tauri v2 + Rust + Vue 3 + TypeScript): seleccionas un texto, pulsas **Alt+X** y un recuadro lo explica en español, con repreguntas. **Win+Shift+Z** hace lo mismo con un recorte de pantalla y OCR. Antes se llamaba Xplanator y, antes aún, Explicador; el identificador cambió a `com.kiook.xplainer`, así que es otra app para Windows (sin el historial ni los ajustes de las anteriores). El `README.md` cuenta cómo usarla e instalarla. Este fichero recoge lo que no se deduce del código: decisiones, porqués, datos comprobados y trampas.
+App de bandeja para Windows y Linux (Tauri v2 + Rust + Vue 3 + TypeScript): seleccionas un texto, pulsas **Alt+X** y un recuadro lo explica en español, con repreguntas. **Win+Shift+Z** hace lo mismo con un recorte de pantalla y OCR (solo Windows). Antes se llamaba Xplanator y, antes aún, Explicador; el identificador cambió a `com.kiook.xplainer`, así que es otra app para Windows (sin el historial ni los ajustes de las anteriores). El `README.md` cuenta cómo usarla e instalarla. Este fichero recoge lo que no se deduce del código: decisiones, porqués, datos comprobados y trampas.
 
 Código, identificadores y commits en inglés; commits de una línea `tipo(xplainer): frase`. Commit, push y PR solo con permiso del dueño, de uno en uno. Se trabaja en `main`.
 
@@ -16,7 +16,10 @@ Código, identificadores y commits en inglés; commits de una línea `tipo(xplai
   - Recorte con OCR: `snip_screen`, `recognize_text`, `rows`, `explain_snip`.
   - Ficheros: `save_note`, `note_name`, `read_history`, `write_history`.
   - Bandeja, instancia única y arranque con Windows (`run`).
-- `src-tauri/src/screen_context.rs`: lo que rodea la selección, leído con UI Automation al pulsar Alt+X (`start`, `finish`, `page_address`).
+  - Lo que solo existe en un sistema lleva `#[cfg(windows)]` o `#[cfg(target_os = "linux")]`. Lo común entre ambos: `background` (proceso hijo sin consola o en su propio grupo), `kill_tree`, `codex`, `open_url`, `explain_key`, `shortcuts`.
+- `src-tauri/src/linux.rs`: lo que Linux hace distinto (selección primaria, PATH de la sesión, terminal para el login, Ollama, diálogo de error).
+- `src-tauri/src/screen_context.rs`: lo que rodea la selección, leído al pulsar Alt+X (`start`, `finish`, `page_address`). En Windows con UI Automation; en Linux con AT-SPI, en `screen_context/linux.rs`, que además da el título y el texto seleccionado.
+- `src-tauri/tauri.linux.conf.json`: en Linux, Tauri lo combina con `tauri.conf.json` y genera `.deb` y AppImage en vez de NSIS.
 - `src/App.vue`: todo el frontend.
   - Prompt (`SYSTEM_PROMPT`), con una estructura por tipo de texto: término, párrafo, código o error.
   - Bloque `<contexto>` de la primera pregunta (`contextLines`, `sentFirstQuestion`, `firstPrompt`).
@@ -101,12 +104,55 @@ Código, identificadores y commits en inglés; commits de una línea `tipo(xplai
 - **Entrada no fiable.** `<` y `>` del contexto pasan a `‹` y `›`: el texto de la página no puede cerrar `<contexto>`. El prompt dice que el contexto solo sirve para elegir el significado y que no se siguen sus instrucciones.
 - **Comprobado a mano** en Chrome, con la vista real de negociaciones (`localhost`). Sin probar: Edge, VS Code, Office y una app colgada de verdad.
 
+### Linux (v3)
+- **Alcance elegido por el dueño:** el núcleo sin OCR. Atajo en X11 y orden `xplainer --explain` en Wayland; título y contexto como en Windows; `.deb` y AppImage.
+- **Wayland no deja registrar atajos globales** (`global-hotkey` solo funciona en X11). Con `WAYLAND_DISPLAY` o `XDG_SESSION_TYPE=wayland` no se registra Alt+X: el usuario crea en su escritorio un atajo que ejecute `xplainer --explain`, y la instancia única le pasa la orden a la copia en marcha. El portal `GlobalShortcuts` (GNOME 48+, KDE) sería la mejora; no se hizo para no añadir `ashpd` ni un `.desktop` registrado.
+- **No se simula Ctrl+C.** En Wayland no se puede, y en X11 no hace falta. La selección sale de:
+  - AT-SPI, que dice qué está seleccionado ahora. En una página web solo da el trozo de un párrafo.
+  - La selección primaria de X11 (`arboard`), que trae la selección entera pero puede ser antigua (un token seleccionado hace una hora en la terminal).
+  - AT-SPI responde una de tres cosas (`Selected`): un texto, "nada seleccionado" o "no lo sé" (la app no tiene objeto de texto o no está en el bus).
+  - Con un texto, gana la primaria si lo contiene, comparando palabras y no saltos de línea. Con "nada seleccionado" no se envía nada. Solo con "no lo sé" se usa la primaria sola (`current_selection`).
+  - En GNOME con Wayland una app en segundo plano no puede leer la primaria de Wayland (Mutter no tiene `ext-data-control`); KDE y Sway sí, con la función `wayland-data-control` de `arboard`. Sin ese protocolo, `arboard` lee la de XWayland. Sin comprobar si Mutter la mantiene al día.
+- **Alt+X dentro del recuadro** emite `explain-deeper` sin texto, y la interfaz lee su propia selección (`window.getSelection()`): Rust no puede leerla en Wayland.
+- **AT-SPI sin escuchar eventos.** En cada lectura:
+  1. `org.a11y.Bus.GetAddress` en el bus de sesión da el bus de accesibilidad.
+  2. Del registro, la ventana con estado `Active`; su nombre es el título.
+  3. `Collection.GetMatches` con `Focused` da el objeto enfocado.
+  4. Se sube hasta un documento (la URL sale de `DocURL` en Firefox o `URI` en Chromium).
+  5. Se baja por los U+FFFC (objetos incrustados) hasta el nodo con la selección, como hace Orca.
+  6. Si la selección tiene texto y además U+FFFC (un enlace dentro de una frase), cada U+FFFC se sustituye por el texto de su objeto; si no, la frase perdería palabras.
+  - Llamadas bloqueantes de zbus con 700 ms cada una, también en el bus de sesión, y los bucles miran el límite de 800 ms de Windows.
+- **Trampa de `GetMatches`:** el constructor de `ObjectMatchRule` deja como `Invalid` el tipo de coincidencia de lo que no se rellena, y GTK entonces no devuelve nada (ni con la regla vacía). Hay que poner `NA` en atributos, roles e interfaces. Comprobado con una ventana GTK3.
+- **Chrome, Firefox y Electron** solo publican su árbol si la accesibilidad del escritorio está activa (variables `ACCESSIBILITY_ENABLED`/`GNOME_ACCESSIBILITY`, `org.a11y.Status.IsEnabled` o `toolkit-accessibility` en gsettings). Xplainer no la activa: es un ajuste global, persistente y que gasta memoria en todas las apps. Sin ella no hay contexto ni selección exacta en el navegador; el título de la ventana sí suele llegar.
+- **Solo dentro de un documento:** el texto de alrededor solo se envía si hay un documento por encima o el objeto es de varias líneas (editor, terminal). Así la barra de direcciones, que es de una línea, nunca viaja.
+- **PATH.** Una app abierta desde el escritorio no hereda lo que añaden `~/.bashrc` o `~/.profile` (nvm, Volta, `~/.local/bin`). Al arrancar se lee el PATH de `$SHELL -ilc` (3 s como mucho) para encontrar `claude` y `codex`. Va entre dos marcas, porque los ficheros de arranque y `~/.bash_logout` pueden imprimir antes y después.
+  - Con `--explain` y otra copia en marcha no se lee: esa orden solo pasa el aviso y el atajo no debe esperar al shell. La copia en marcha se detecta por el nombre que la instancia única tiene en el bus de sesión (identificador + `.SingleInstance`); un test comprueba que sigue al identificador.
+  - Los programas se buscan en el PATH desde Rust, sin `which`, que falta en algunas distribuciones mínimas.
+- **Procesos.** Cada hijo va en su propio grupo (`process_group(0)`), y cancelar manda `SIGKILL` al grupo entero: así muere también el nieto (sh → node → codex). Lo cubre un test.
+- **Login de los CLIs** en una terminal, la primera que arranque: `x-terminal-emulator`, `ptyxis`, `gnome-terminal`, `kgx`, `konsole`, `xfce4-terminal`, `kitty`, `alacritty`, `foot` o `xterm`. Ptyxis y GNOME Console reciben la orden tras `--`, según sus páginas de manual.
+- **Comprobado en WSLg (Ubuntu 24.04)** con una ventana GTK3:
+  - Por AT-SPI: título, "Negotiations" seleccionada y sus líneas de alrededor, en 12 ms.
+  - Alt+X simulado con `xdotool` en X11, y `xplainer --explain` en modo Wayland: el recuadro abre con la palabra.
+  - Se generan el `.deb` y el AppImage.
+  - Sin probar: un escritorio GNOME o KDE real, Chrome y Firefox con la accesibilidad activa, la bandeja (WSLg no tiene) y "Iniciar con la sesión" desde el AppImage.
+- **Probar en WSLg:**
+  - Envuelve app y ventana de prueba en `dbus-run-session` para que compartan el bus de accesibilidad.
+  - Usa `GDK_BACKEND=x11` para poder hacer capturas con `import -window <id>`. La pantalla entera no se puede capturar.
+  - Para el modo X11, quita `WAYLAND_DISPLAY`.
+  - Una ventana nueva no recibe el foco si en Windows estás usando otra app, y entonces no está `Active`.
+
 ## Desarrollar y probar
 
 - `npm run tauri dev` para desarrollar. `npm run tauri build` genera el instalador en `src-tauri/target/release/bundle/nsis/Xplainer_0.2.0_x64-setup.exe`; la compilación final tarda entre 3 y 8 minutos.
 - La app instalada no se actualiza sola: tras cada cambio hay que recompilar y reinstalar.
 - Antes de usar `tauri dev` o de probar el ejecutable final, cierra la app instalada. Comparten atajo e identificador, y la instancia única reenvía la segunda copia a la primera y la cierra.
 - Con una ruta de proyecto muy larga, el enlazador de Windows falla (`LNK1104`). Usa una ruta corta o un `CARGO_TARGET_DIR` corto.
+- **Linux desde Windows, con WSL:**
+  1. Instala las librerías de Tauri (lista oficial de prerrequisitos) y `xdotool` para simular teclas.
+  2. Copia el proyecto al disco de Linux (`rsync` sin `target`, `node_modules` ni `.git`): compilar desde `/mnt/c` es muy lento.
+  3. La interfaz se genera en Windows con `npm run build`, porque el Node de Ubuntu 24.04 (18) es demasiado viejo para Vite 8.
+  4. En Linux, `cargo test` y `tauri build --config '{"build":{"beforeBuildCommand":""}}'`.
+  5. El AppImage necesita dos cosas en WSL. Primero, `APPIMAGE_EXTRACT_AND_RUN=1`, porque no hay FUSE y `linuxdeploy` también es un AppImage. Segundo, un PATH solo de Linux: el WSL añade carpetas de Windows y `linuxdeploy` aborta al no poder leer una (`Permission denied`).
 - Tests: `npm run test:all` (Vitest para `App.vue` con los comandos de Rust simulados, y `cargo test` para `src-tauri/src/tests.rs`). Los que llaman a modelos reales están marcados `#[ignore]`. La prueba del ejecutable final es `scripts/smoke-test.ps1`. `TESTING.md` recoge los criterios de aceptación y qué test cubre cada uno.
 - En PowerShell, `$null` pasado a un parámetro `string` de una función nativa llega como cadena vacía: `FindWindow($null, ...)` no encuentra nada. Por eso la prueba del ejecutable recorre las ventanas con `EnumWindows`.
 - Para ver la interfaz sin Tauri (capturas, por ejemplo), usa un HTML aparte:

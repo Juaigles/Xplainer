@@ -106,6 +106,19 @@ Los datos de `src-tauri/tests/fixtures` son salidas reales de `claude -p`, `code
 - **D5.** Alt+X copia la selección de otra app y deja el portapapeles como estaba; el menú de la app de origen no se abre. A mano (teclas físicas).
 - **D6.** Icono de la X en la bandeja y menú (Iniciar con Windows, Salir). A mano.
 
+### 12 · Linux
+Los tests de Rust se pasan en Linux con `cargo test`; los marcados `#[cfg(windows)]` (OCR, `taskkill`) no se compilan allí.
+- **L1.** Todo el lado nativo compila y pasa sus tests en Linux; en Windows no cambia nada. `cargo test` en los dos sistemas.
+- **L2.** Cancelar mata el CLI y lo que este haya lanzado (su grupo de procesos). Test: "cancelling_kills_the_running_process_and_its_children".
+- **L3.** Se explica la selección completa de la primaria solo si contiene lo que AT-SPI ve seleccionado ahora (aunque cambien los saltos de línea). Si la app dice que no hay nada seleccionado, una primaria antigua no se envía; sola, solo se usa si la app no puede decir nada. Test: "linux_uses_the_whole_primary_selection_only_when_it_is_current", y a mano en WSLg con una primaria antigua y la ventana GTK sin selección.
+- **L3b.** Un enlace dentro de la selección no pierde sus palabras: cada U+FFFC se sustituye por el texto de su objeto. Sin probar: hace falta un navegador con la accesibilidad activa.
+- **L3c.** `xplainer --explain` con otra copia en marcha no lee el PATH del shell; los programas se buscan sin `which`. Tests: "linux_single_instance_name_follows_the_identifier" y "linux_finds_programs_on_the_path_without_which".
+- **L4.** AT-SPI lee el título, la selección y sus líneas de alrededor de la ventana activa. Test ignorado "real_linux_window_is_read", con una ventana GTK abierta (comprobado en WSLg).
+- **L5.** En Wayland la interfaz no nombra atajos que no hay y explica cómo crear uno con `xplainer --explain`. Test de frontend: "on Wayland names no shortcut it lacks and says how to bind one".
+- **L6.** Alt+X dentro del recuadro sin texto de Rust explica la selección del propio recuadro. Test de frontend: "reads its own selection when the shortcut brings no text (Linux)".
+- **L7.** Alt+X en X11 y `xplainer --explain` en Wayland abren el recuadro con la palabra seleccionada. A mano en WSLg, con `xdotool`.
+- **L8.** Sin probar: un escritorio GNOME o KDE real, la bandeja, "Iniciar con la sesión" desde el AppImage, y Chrome o Firefox con la accesibilidad activa.
+
 ## Prueba de humo del ejecutable final
 
 Con `src-tauri/target/release/xplainer.exe` y sin otra copia abierta (ni Xplanator ni Explicador, que comparten Alt+X):

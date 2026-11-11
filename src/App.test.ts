@@ -30,6 +30,8 @@ interface Backend {
   /** What `sign_in` waits for; resolved at once when unset. */
   signIn?: Promise<null>;
   history: string | Error;
+  /** What `shortcuts` answers; unset, the popup keeps Windows' shortcuts. */
+  shortcuts?: { explain: string | null; snip: string | null };
   answer: (prompt: string) => Promise<string>;
   calls: Call[];
 }
@@ -99,6 +101,8 @@ beforeEach(() => {
         case "write_history":
           backend.history = args.history as string;
           return null;
+        case "shortcuts":
+          return backend.shortcuts ?? null;
         case "save_note":
           return (args.existing as string | null) ?? `C:\\Notas\\${args.title}.md`;
         case "ask_claude_code":
@@ -564,6 +568,16 @@ describe("explaining", () => {
     await flushPromises();
     expect(calls("plugin:window|hide")).toHaveLength(1);
   });
+
+  it("on Wayland names no shortcut it lacks and says how to bind one", async () => {
+    backend.shortcuts = { explain: null, snip: null };
+    const app = await open();
+    await flushPromises();
+    const hint = app.find(".body .notice").text();
+    expect(hint).toContain("pulsa tu atajo");
+    expect(hint).toContain("xplainer --explain");
+    expect(hint).not.toContain("Win+Shift+Z");
+  });
 });
 
 describe("chained explanation", () => {
@@ -584,6 +598,20 @@ describe("chained explanation", () => {
     expect(app.find(".trail").exists()).toBe(false);
     expect(app.find("header .term").text()).toBe("TCP");
     expect(app.find(".answer").text()).toContain("Explicación de «TCP»");
+  });
+
+  it("reads its own selection when the shortcut brings no text (Linux)", async () => {
+    const app = await open();
+    await explain("TCP");
+    await settle();
+    const word = document.createElement("span");
+    word.textContent = "handshake";
+    document.body.append(word);
+    window.getSelection()?.selectAllChildren(word);
+    await emit("explain-deeper", { text: "", window_title: "" });
+    await settle();
+    expect(trail(app)).toBe("TCP › handshake");
+    word.remove();
   });
 
   it("offers the selected word with a button next to it", async () => {
