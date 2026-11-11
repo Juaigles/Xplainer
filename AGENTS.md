@@ -107,12 +107,11 @@ Código, identificadores y commits en inglés; commits de una línea `tipo(xplai
 
 ## Pendiente
 
-- Botones "Conectar" con login delegado (`claude auth login`, `codex login`) y detectar opencode.
+- Detectar opencode como otra opción de la primera vez.
 - "Sign in with ChatGPT" oficial, para usar ChatGPT sin Codex.
 - Actualizador automático (plugin `updater` de Tauri + GitHub Releases).
 - Ideas para aprender que el dueño no eligió en la v2: perfil "lo que ya sé", "Explícamelo tú" (técnica Feynman) y repaso espaciado enviando tarjetas a Anki (AnkiConnect).
 - `App.vue` pasa de 1.100 líneas: historial y ajustes podrían ir en componentes propios.
 - Hallazgos menores sin corregir:
   - portapapeles ocupado por otra app en el momento de capturar;
-  - falta un botón "Reintentar";
-  - la primera ejecución puede elegir Claude si Ollama arranca más tarde que la app.
+  - falta un botón "Reintentar".
