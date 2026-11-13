@@ -46,7 +46,7 @@ Xplainer stays out of the way in the tray. Select the text, press <kbd>Alt</kbd>
 
 ### Windows
 
-1. Download `Xplainer_0.2.0_x64-setup.exe` from the [latest release](https://github.com/Juaigles/Xplainer/releases/latest).
+1. Download `Xplainer_0.3.0_x64-setup.exe` from the [latest release](https://github.com/Juaigles/Xplainer/releases/latest).
 2. Run it. It installs for your user only, without admin rights.
 3. The installer is not code-signed yet, so Windows SmartScreen warns you the first time: click **More info → Run anyway**.
 4. Xplainer starts in the system tray. Select some text anywhere and press <kbd>Alt</kbd>+<kbd>X</kbd>. The first time, choose which AI explains.
@@ -58,7 +58,7 @@ To start it with Windows, right-click the tray icon and tick **Iniciar con Windo
 Xplainer's core works on Linux: explain the selection, follow-up questions, the three AIs, notes, history and the window context. There is no snipping with OCR.
 
 1. Download the `.deb` (Debian, Ubuntu and derivatives) or the `.AppImage` (most other distributions) from the [latest release](https://github.com/Juaigles/Xplainer/releases/latest).
-2. Install the `.deb` with `sudo apt install ./Xplainer_0.2.0_amd64.deb`, or make the AppImage executable (`chmod +x`) and run it.
+2. Install the `.deb` with `sudo apt install ./Xplainer_0.3.0_amd64.deb`, or make the AppImage executable (`chmod +x`) and run it.
 3. Xplainer starts in the system tray. GNOME needs the *AppIndicator* extension to show tray icons.
 
 How you trigger it depends on your desktop session:

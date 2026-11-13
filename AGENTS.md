@@ -143,7 +143,7 @@ Código, identificadores y commits en inglés; commits de una línea `tipo(xplai
 
 ## Desarrollar y probar
 
-- `npm run tauri dev` para desarrollar. `npm run tauri build` genera el instalador en `src-tauri/target/release/bundle/nsis/Xplainer_0.2.0_x64-setup.exe`; la compilación final tarda entre 3 y 8 minutos.
+- `npm run tauri dev` para desarrollar. `npm run tauri build` genera el instalador en `src-tauri/target/release/bundle/nsis/Xplainer_0.3.0_x64-setup.exe`; la compilación final tarda entre 3 y 8 minutos.
 - La app instalada no se actualiza sola: tras cada cambio hay que recompilar y reinstalar.
 - Antes de usar `tauri dev` o de probar el ejecutable final, cierra la app instalada. Comparten atajo e identificador, y la instancia única reenvía la segunda copia a la primera y la cierra.
 - Con una ruta de proyecto muy larga, el enlazador de Windows falla (`LNK1104`). Usa una ruta corta o un `CARGO_TARGET_DIR` corto.
