@@ -8,9 +8,12 @@
 
 A tray app that turns any word, paragraph, piece of code or error message into a lesson, with your own AI subscription or a free local model.
 
+[![Latest release](https://img.shields.io/github/v/release/Juaigles/Xplainer?label=release)](https://github.com/Juaigles/Xplainer/releases/latest)
 [![Platform: Windows 10/11 and Linux (beta)](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20%7C%20Linux%20%28beta%29-0078D4)](#install)
 [![Built with Tauri 2](https://img.shields.io/badge/built%20with-Tauri%202-24C8DB)](https://tauri.app)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+**[Download for Windows or Linux](https://github.com/Juaigles/Xplainer/releases/latest)**
 
 [Install](#install) · [Features](#features) · [Models](#choose-a-model) · [Privacy](#privacy-and-security) · [Build from source](#build-from-source)
 
@@ -33,6 +36,7 @@ Xplainer stays out of the way in the tray. Select the text, press <kbd>Alt</kbd>
 ## Features
 
 - **Explains anything you can select.** It adapts the structure to what you selected: a term gets a definition, an everyday analogy and a common confusion; code is walked through step by step; an error gets its likely cause and how to check it.
+- **Knows where you are.** A single word is ambiguous: *Negotiations* on a data platform is not haggling over a car. Xplainer reads the app, the page address and the lines around your selection to pick the right meaning, and shows you exactly what it sent.
 - **Text you can't select, too.** Press <kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd>, snip part of the screen (an image, a video, a locked PDF) and Xplainer reads it with the OCR built into Windows. Windows only.
 - **Change the level in one click.** *Más simple*, *Más técnico* and *Otro significado* rephrase the last answer without typing.
 - **Go deeper without losing your place.** Select a word inside an answer to explain it as a new level. A trail (`TCP › handshake › SYN`) takes you back to any level.
@@ -60,7 +64,7 @@ To start it with Windows, right-click the tray icon and tick **Iniciar con Windo
 
 Xplainer's core works on Linux: explain the selection, follow-up questions, the three AIs, notes, history and the window context. There is no snipping with OCR.
 
-1. Download the `.deb` (Debian, Ubuntu and derivatives) or the `.AppImage` (most other distributions) from the [latest release](https://github.com/Juaigles/Xplainer/releases/latest).
+1. Download the `.deb` (Debian, Ubuntu and derivatives) or the `.AppImage` (most other distributions) from the [latest release](https://github.com/Juaigles/Xplainer/releases/latest). Both need glibc 2.34 or later: Ubuntu 22.04, Debian 12, Fedora 35 and newer.
 2. Install the `.deb` with `sudo apt install ./Xplainer_0.3.0_amd64.deb`, or make the AppImage executable (`chmod +x`) and run it.
 3. Xplainer starts in the system tray. GNOME needs the *AppIndicator* extension to show tray icons.
 
@@ -71,7 +75,11 @@ How you trigger it depends on your desktop session:
 
 To start it with your session, tick **Iniciar con la sesión** in the tray menu.
 
+### Updating
+
 Xplainer does not update itself yet: to update, download the new version and install it over the old one.
+
+Coming from *Xplanator* (0.2.0)? The app was renamed and now has a new identifier, so it installs as a separate app. Uninstall Xplanator from **Settings → Apps**; its history and settings are not carried over.
 
 ## Choose a model
 
@@ -146,6 +154,13 @@ Close the installed Xplainer before running a development build: both use the sa
 - Only plain text is restored to the clipboard: rich text comes back without formatting, and files or images copied before are lost.
 - The OCR can confuse similar characters (`l` and `I`) or drop lone symbols in code.
 - Codex always reads your global `~/.codex/AGENTS.md`; it has no option to skip it.
+
+## Roadmap
+
+- Automatic updates from GitHub Releases.
+- Linux tested on full GNOME and KDE desktops, and snipping with OCR.
+- [opencode](https://opencode.ai) as another AI option.
+- ChatGPT through the official *Sign in with ChatGPT*, without installing Codex.
 
 ## Contributing
 
