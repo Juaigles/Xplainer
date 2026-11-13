@@ -1,0 +1,53 @@
+# Builds the Windows installer and the Linux packages and attaches them to a draft release.
+# Run it by hand (Actions → release → Run workflow). Linux is built on Ubuntu 22.04 so the packages
+# also start on distributions with an older glibc (Ubuntu 22.04, Debian 12) than the build machine's.
+name: release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Linux libraries
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - run: npm ci
+
+      # Windows is tested on the owner's computer before each release; Linux only here.
+      - name: Test (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: npm run test:all
+
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'Xplainer __VERSION__'
+          releaseBody: 'Download the installer for your system below. Linux support is in beta.'
+          releaseDraft: true
+          prerelease: false

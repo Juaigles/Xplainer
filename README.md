@@ -8,7 +8,7 @@
 
 A tray app that turns any word, paragraph, piece of code or error message into a lesson, with your own AI subscription or a free local model.
 
-[![Platform: Windows 10/11 and Linux](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20%7C%20Linux-0078D4)](#install)
+[![Platform: Windows 10/11 and Linux (beta)](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20%7C%20Linux%20%28beta%29-0078D4)](#install)
 [![Built with Tauri 2](https://img.shields.io/badge/built%20with-Tauri%202-24C8DB)](https://tauri.app)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -53,7 +53,10 @@ Xplainer stays out of the way in the tray. Select the text, press <kbd>Alt</kbd>
 
 To start it with Windows, right-click the tray icon and tick **Iniciar con Windows**. It is off by default. To uninstall it, use **Settings → Apps** in Windows.
 
-### Linux
+### Linux (beta)
+
+> [!WARNING]
+> Linux support is new and has only been tested in WSLg, not yet on a full GNOME or KDE desktop. If something doesn't work, please [open an issue](https://github.com/Juaigles/Xplainer/issues) with your distribution, desktop and session type (X11 or Wayland).
 
 Xplainer's core works on Linux: explain the selection, follow-up questions, the three AIs, notes, history and the window context. There is no snipping with OCR.
 

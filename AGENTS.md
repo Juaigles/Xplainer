@@ -145,6 +145,10 @@ Código, identificadores y commits en inglés; commits de una línea `tipo(xplai
 
 - `npm run tauri dev` para desarrollar. `npm run tauri build` genera el instalador en `src-tauri/target/release/bundle/nsis/Xplainer_0.3.0_x64-setup.exe`; la compilación final tarda entre 3 y 8 minutos.
 - La app instalada no se actualiza sola: tras cada cambio hay que recompilar y reinstalar.
+- **Release** con `.github/workflows/release.yml`, lanzado a mano desde Actions. Compila Windows y Linux y deja una release en borrador con la etiqueta `v` + versión; se publica a mano tras revisarla.
+  - Linux se compila en Ubuntu 22.04: compilado en 24.04 pediría glibc 2.39 y no arrancaría en Ubuntu 22.04 (2.35) ni en Debian 12 (2.36).
+  - Los tests solo corren en Linux: Windows se prueba en el equipo del dueño antes de cada release, y el OCR del test depende de los idiomas instalados en la máquina.
+  - Linux va marcado como beta en el README hasta probarlo en un escritorio GNOME o KDE real.
 - Antes de usar `tauri dev` o de probar el ejecutable final, cierra la app instalada. Comparten atajo e identificador, y la instancia única reenvía la segunda copia a la primera y la cierra.
 - Con una ruta de proyecto muy larga, el enlazador de Windows falla (`LNK1104`). Usa una ruta corta o un `CARGO_TARGET_DIR` corto.
 - **Linux desde Windows, con WSL:**
